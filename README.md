@@ -7,6 +7,7 @@ An iOS app that helps users break the doomscrolling habit by tracking app usage 
 Stop Doomscrolling is built for a Computer Interface class project. **Zero budget. No Apple Developer account needed.** It combines iOS Shortcuts (for automatic data collection) with a React Native app (for viewing insights) and a serverless backend (for storage and push notifications).
 
 ## How It Works
+
 1. **User sets up Shortcuts** — Creates iOS automations that log when they open/close apps (Instagram, TikTok, etc.)
 2. **Shortcuts send data to backend** — Each app open/close triggers an HTTP request with: `appName`, `openTime`, `closeTime`, `userId`
 3. **App displays insights** — React Native app fetches data from backend and shows usage trends and patterns
