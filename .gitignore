@@ -1,1 +1,27 @@
+# Claude
 .claude
+
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+
+# Environment variables
+.env
+.env.local
+.env*.local
+
+# Vercel
+.vercel
+
+# macOS
+.DS_Store
+
+
+#firestore
+firestore.json
+firebase.json
+
+screetime.csv

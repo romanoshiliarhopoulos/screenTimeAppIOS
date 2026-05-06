@@ -52,9 +52,11 @@ Stop Doomscrolling uses a three-layer serverless architecture optimized for zero
 
 **Project Structure:**
 
-## Layer 3: Backend (Serverless)
+## Layer 3: Backend (Python FastAPI)
 
-**Hosting:** Vercel Functions + Firestore
+**Hosting:** Vercel (Python runtime) + Firestore
+
+The backend is a Python FastAPI application deployed on Vercel's Python runtime. A single `main.py` defines the FastAPI app; Vercel treats it as a serverless function via `api/index.py`.
 
 **Responsibilities:**
 1. **Receive Shortcuts data** — POST endpoint that accepts open/close events from Shortcuts
@@ -81,23 +83,26 @@ Sessions are flagged with a status field:
 **Project Structure:**
 ```
 backend/
-├── functions/
-│   ├── api/
-│   │   ├── recordUsage.ts        # POST /api/recordUsage (from Shortcuts)
-│   │   ├── getUsageStats.ts      # GET /api/usage/{userId}/{date}
-│   │   ├── getNotifications.ts   # GET /api/notifications/{userId}
-│   │   ├── createGroup.ts        # POST /api/groups
-│   │   ├── getGroup.ts           # GET /api/groups/{groupId}  (join confirmation preview)
-│   │   ├── joinGroup.ts          # POST /api/groups/{groupId}/members  { userId }
-│   │   └── getLeaderboard.ts     # GET /api/groups/{groupId}/leaderboard?date=
-│   └── triggers/
-│       ├── onSessionFinalized.ts # Updates dailySummaries when session closes
-│       └── onHighUsage.ts        # Firestore trigger to send notifications
+├── api/
+│   └── index.py                  # Vercel entrypoint — exports the FastAPI `app`
+├── main.py                       # FastAPI app definition and route registration
+├── routers/
+│   ├── usage.py                  # POST /api/recordUsage, GET /api/usage/{userId}/{date}
+│   ├── notifications.py          # GET /api/notifications/{userId}
+│   └── groups.py                 # POST/GET /api/groups, join, leaderboard
+├── services/
+│   ├── session_service.py        # Session reconstruction logic (clean/inferred/timed_out)
+│   ├── summary_service.py        # Aggregates sessions into dailySummaries
+│   └── notification_service.py   # APNs push notification dispatch
+├── models.py                     # Pydantic request/response models
+├── firestore_client.py           # Shared Firestore client initialization
 ├── firestore-rules/
 │   └── firestore.rules           # Security rules
-└── shortcuts/
-    ├── instagram-shortcut.json   # Template automations
-    └── tiktok-shortcut.json
+├── shortcuts/
+│   ├── instagram-shortcut.json   # Template automations
+│   └── tiktok-shortcut.json
+├── requirements.txt              # fastapi, firebase-admin, httpx, pydantic, etc.
+└── vercel.json                   # Routes all /api/* to api/index.py
 ```
 
 **Firestore Schema:**
@@ -205,9 +210,9 @@ const linking = {
                    │
                    ▼
         ┌──────────────────────┐
-        │ Vercel Function      │
-        │ recordUsage()        │
-        │ Validates data       │
+        │ FastAPI on Vercel    │
+        │ POST /recordUsage    │
+        │ Validates (Pydantic) │
         │ Writes to Firestore  │
         └──────────┬───────────┘
                    │
@@ -241,7 +246,7 @@ const linking = {
 ## Performance Considerations
 
 - **Firestore Costs:** 50k reads/day free tier — sufficient for ~10 users checking stats multiple times daily. Leaderboard reads `dailySummaries` (1 doc per member per day), not raw sessions — keeps read count low.
-- **Vercel Functions:** 100 invocations/month from Shortcuts + frequent frontend queries — well within free tier
+- **Vercel Python Runtime:** Serverless invocations from Shortcuts + frontend queries — well within the free tier. Cold starts are slightly higher than Node but acceptable for this use case.
 - **Data Retention:** Consider archiving old usage data after 30 days to stay within Firestore limits
 - **Push Notifications:** Batch them (don't send on every app close) to reduce APNs load
 

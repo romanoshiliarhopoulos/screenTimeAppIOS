@@ -1,0 +1,75 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ──────────────────────────────────────────────────────
+
+    // True if the requesting user is authenticated
+    function isAuthed() {
+      return request.auth != null;
+    }
+
+    // True if the requesting user owns this userId
+    function isOwner(userId) {
+      return isAuthed() && request.auth.uid == userId;
+    }
+
+    // True if the requesting user is listed in a group's memberIds
+    function isGroupMember(groupId) {
+      return isAuthed() &&
+        request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+    }
+
+    // ── User documents ────────────────────────────────────────────────────────
+
+    match /users/{userId} {
+      // The user document itself is not directly used; sub-collections are.
+      allow read, write: if isOwner(userId);
+
+      // Profile: only the owner
+      match /profile/{doc} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Preferences: only the owner
+      match /preferences/{doc} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Raw sessions: private — owner only
+      match /sessions/{sessionId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Daily summaries: owner can always read/write.
+      // Other users cannot read via the client SDK — the leaderboard endpoint
+      // runs server-side with the Admin SDK and is not subject to these rules.
+      match /dailySummaries/{date} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // ── Group documents ───────────────────────────────────────────────────────
+
+    match /groups/{groupId} {
+      // Any authenticated user may read the top-level group doc (needed for
+      // join-preview: shows group name + member count before committing).
+      allow read: if isAuthed();
+
+      // Only members may update (e.g. joining adds to memberIds).
+      // Creation is handled by the backend (Admin SDK) — deny direct client writes
+      // except for the join flow which calls the API.
+      allow create: if false;
+      allow update: if isGroupMember(groupId);
+      allow delete: if false;
+
+      // Member sub-documents: readable by all group members, writable by the
+      // backend only (Admin SDK bypasses rules).
+      match /members/{memberId} {
+        allow read: if isGroupMember(groupId);
+        allow write: if false;
+      }
+    }
+  }
+}

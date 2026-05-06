@@ -1,0 +1,18 @@
+[project]
+name = "screentimeapp-backend"
+version = "0.1.0"
+description = "Screen Time App API"
+authors = [
+    {name = "romanos"}
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi (>=0.136.1,<0.137.0)",
+    "firebase-admin (>=7.4.0,<8.0.0)",
+    "pydantic (>=2.13.3,<3.0.0)",
+    "uvicorn (>=0.34.0,<0.35.0)"
+]
+
+
+[tool.poetry]
+package-mode = false
