@@ -11,6 +11,8 @@ import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "../lib/firebase";
+import * as Notifications from "expo-notifications";
+import * as Device from "expo-device";
 import { colors, spacing, fontSize } from "../theme";
 import LeaderboardCard from "../components/LeaderboardCard";
 
@@ -51,6 +53,25 @@ type DayStat = {
 type Group = { id: string; name: string };
 
 export default function HomeScreen() {
+  // --- DEBUG: log push token + Firebase ID token for notification testing ---
+  // Remove this block once testing is done.
+  useEffect(() => {
+    async function logDebugTokens() {
+      if (!Device.isDevice) return;
+      const { status } = await Notifications.requestPermissionsAsync();
+      if (status !== "granted") {
+        console.log("[DEBUG] Notification permission denied");
+        return;
+      }
+      const pushToken = (await Notifications.getExpoPushTokenAsync()).data;
+      const idToken = await auth.currentUser?.getIdToken();
+      console.log("[DEBUG] Expo push token:", pushToken);
+      console.log("[DEBUG] Firebase ID token:", idToken);
+    }
+    logDebugTokens();
+  }, []);
+  // --- END DEBUG ---
+
   const [today, setToday] = useState<DayStat | null>(null);
   const [yesterday, setYesterday] = useState<DayStat | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);

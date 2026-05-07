@@ -17,6 +17,7 @@
     "@react-navigation/native-stack": "^7.14.12",
     "expo": "~54.0.33",
     "expo-auth-session": "^55.0.15",
+    "expo-clipboard": "~8.0.8",
     "expo-constants": "^55.0.16",
     "expo-crypto": "^55.0.14",
     "expo-screen-orientation": "^55.0.14",

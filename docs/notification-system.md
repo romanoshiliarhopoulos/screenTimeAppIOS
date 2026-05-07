@@ -2,211 +2,177 @@
 
 ## Purpose
 
-Deliver simple, timely nudges that interrupt doomscrolling behavior:
+Deliver timely nudges that interrupt doomscrolling and create social accountability:
 
-- **Primary v1 alert:** "You've been scrolling for X minutes."
-- Start minimal, measure impact, then add richer interventions.
+- **Personal alert:** "You've been on Instagram for 20 minutes."
+- **Social alert to friends:** "Friend X has been on TikTok for 30 minutes — go shame them."
+- **Shame button:** Friends can manually fire a notification at someone currently live-scrolling.
 
----
-
-## v1 Scope
-
-### What ships now
-
-1. Detect continuous usage duration for tracked apps.
-2. Send one push notification when duration crosses a threshold (example: 20 minutes).
-3. Enforce cooldown so users are not spammed (example: one alert per 2 hours per app).
-
-### What is out of scope for v1
-
-- Personalized AI messaging
-- Multi-step habit plans
-- Social accountability notifications
-- Complex per-user optimization
+Start minimal, measure impact, then add richer interventions.
 
 ---
 
-## High-Level Flow
+## Notification Types
 
-1. **iOS Shortcuts** sends app-open / app-close events to backend.
-2. **Backend** writes sessions to Firestore.
-3. API calls a single **NotificationService wrapper**.
-4. Wrapper handles rule evaluation, dedupe/cooldown, and push delivery internally.
-5. App receives notification and deep-links to relevant screen (Home/Stats).
+### 1. Personal Threshold Alert
+- **When:** User has been on a tracked app for N minutes without closing it.
+- **Message:** "You've been on {appName} for {X} minutes. Want to take a break?"
+- **Trigger:** Cron job detects an open session older than `userAlertThresholdSeconds` with no close event.
+- **Configurable per user:** threshold (default 20 min), cooldown (default 2 hours), quiet hours.
+
+### 2. Friend Alert (Social Accountability)
+- **When:** User has been on a tracked app for M minutes (longer than personal threshold) and friends have not been notified yet.
+- **Message:** "{firstName} has been on {appName} for {X} minutes. Go shame them!"
+- **Trigger:** Same cron job, second threshold check (`friendAlertThresholdSeconds`, default 30 min).
+- **Configurable per user:** whether to allow friends to see their live sessions.
+
+### 3. Shame Button (Manual)
+- **When:** A friend taps the Shame button on the live session card in the app.
+- **Message:** "Your friend is calling you out! Time to put the phone down."
+- **Trigger:** On-demand via `POST /api/users/{friendId}/shame`.
+- **Rate limited:** One shame per sender per target per cooldown window (default 30 min).
+
+### 4. Session Close Summary (Retroactive Friend Notification)
+- **When:** A live session that already notified friends finally closes.
+- **Message to friends:** "{firstName} finally put down {appName} after {X} minutes."
+- **Trigger:** Close event handler, if the `activeSessions` document has `notifiedFriends = true`.
+- **Configurable:** Can be disabled by user.
+
+### 5. Daily Cap Warning
+- **When:** A session close pushes the user's `dailySummary.totalSeconds` over a soft daily limit.
+- **Message:** "You've used {appName} for {X} min today. Your daily limit is {Y} min."
+- **Trigger:** Session close event handler, reads from existing `dailySummaries` collection.
+- **Configurable per user:** daily cap per app or overall.
+
+### 6. Streak Reinforcement (Positive)
+- **When:** User has stayed under their daily limit N days in a row.
+- **Message:** "{N}-day streak under your limit. Keep it up."
+- **Trigger:** Nightly cron job after midnight.
 
 ---
 
-## Wrapper-First Design (Abstraction Layer)
+## Architecture: Why Cron, Not In-Request Timers
 
-All backend APIs should call one Python wrapper instead of implementing notification logic inline.
+The backend runs on Vercel — stateless, short-lived serverless functions. A request handler cannot start a timer and wait. Instead:
 
-### Public contract (what APIs call)
+1. On every **open** event → write/upsert a document to the top-level `activeSessions` collection.
+2. On every **close** event → delete that document from `activeSessions`.
+3. A **Vercel Cron Function** runs on a short interval (e.g., every 5 minutes) and scans `activeSessions` for documents that have aged past configured thresholds.
 
-```python
-from dataclasses import dataclass
-from typing import Optional, Literal
+The cron job is the timer. Resolution lag = cron interval. A 5-minute interval means a user could be 24 minutes in before receiving the "20-minute" notification — acceptable for v1.
 
-@dataclass
-class UsageSessionInput:
-    userId: str
-    deviceId: str
-    appName: str
-    openTime: str      # ISO format
-    closeTime: str     # ISO format
+---
 
-@dataclass
-class PushTokenInput:
-    userId: str
-    deviceId: str
-    expoPushToken: str
-    platform: Literal['ios']
+## Active Session Tracking
 
-@dataclass
-class SettingsInput:
-    userId: str
-    enabled: Optional[bool] = None
-    scrollAlertThresholdSeconds: Optional[int] = None
-    cooldownSeconds: Optional[int] = None
-    trackedApps: Optional[list[str]] = None
-    quietHoursStart: Optional[str] = None  # "HH:MM" format
-    quietHoursEnd: Optional[str] = None    # "HH:MM" format
+### Why Top-Level Collection
 
-class NotificationService:
-    async def send_notification(self, input: dict) -> 'NotificationDecision':
-        ...
+`activeSessions` must be a **top-level Firestore collection**, not nested under `users/{userId}/`. This allows the cron job to scan across all users in a single query without needing collection group indexes.
 
-    async def handle_usage_session(self, input: UsageSessionInput) -> 'NotificationDecision':
-        ...
+### Document: `activeSessions/{userId}_{deviceId}_{appName}`
 
-    async def register_push_token(self, input: PushTokenInput) -> None:
-        ...
-
-    async def update_settings(self, input: SettingsInput) -> None:
-        ...
+```json
+{
+  "userId": "abc123",
+  "deviceId": "iphone-x",
+  "appName": "Instagram",
+  "openTime": "<ISO timestamp>",
+  "notifiedUser": false,
+  "notifiedFriends": false,
+  "createdAt": "<ISO timestamp>"
+}
 ```
 
-### Return shape (for logs/observability)
+### State Machine
 
-```python
-from dataclasses import dataclass
-from typing import Literal, Union
-
-@dataclass
-class NotificationDecisionSent:
-    status: Literal['sent'] = 'sent'
-    reason: Literal['threshold_met'] = 'threshold_met'
-    notificationId: str
-
-@dataclass
-class NotificationDecisionSkipped:
-    status: Literal['skipped'] = 'skipped'
-    reason: Literal['disabled', 'untracked_app', 'quiet_hours', 'below_threshold', 'cooldown', 'no_token']
-
-@dataclass
-class NotificationDecisionFailed:
-    status: Literal['failed'] = 'failed'
-    reason: Literal['delivery_error']
-    errorCode: str
-
-NotificationDecision = Union[NotificationDecisionSent, NotificationDecisionSkipped, NotificationDecisionFailed]
 ```
-
-### Internal composition (hidden from APIs)
-
-`NotificationService` owns these internal modules:
-
-- `NotificationRulesEngine` (threshold/quiet-hours/cooldown decisions)
-- `NotificationTemplateBuilder` (title/body + payload)
-- `NotificationSender` (actual Expo call)
-- `NotificationAuditRepository` (persist sent/skipped/failed to Firestore)
-- `NotificationSettingsRepository` (load/save user settings)
-- `PushTokenRepository` (load/save device tokens)
-
-### Wrapper behavior
-
-`send_notification()` should be the only place that knows how to talk to Expo.
-It should:
-
-1. Build the Expo message payload.
-2. Look up device push tokens.
-3. Call Expo's push API.
-4. Record success or failure.
-5. Return a small decision object for logging.
-
-### API usage example
-
-```python
-# In your Flask/FastAPI route handler
-from flask import request, jsonify
-
-@app.post('/api/usage')
-async def ingest_usage():
-    body = request.json
-    
-    # Save session to Firestore
-    session = UsageSession(**body)
-    await usage_repository.save(session)
-    
-    # Trigger notifications through the wrapper
-    decision = await notification_service.handle_usage_session(
-        UsageSessionInput(
-            userId=body['userId'],
-            deviceId=body['deviceId'],
-            appName=body['appName'],
-            openTime=body['openTime'],
-            closeTime=body['closeTime'],
-        )
-    )
-    
-    logger.info(f'notification_decision: {decision}')
-    return jsonify({'status': 'ok'})
+open event
+    │
+    ▼
+activeSessions doc created
+    │
+    ├─ cron fires, openTime > userThreshold, notifiedUser=false
+    │       → send personal notification, set notifiedUser=true
+    │
+    ├─ cron fires, openTime > friendThreshold, notifiedFriends=false
+    │       → fan out to friend group, set notifiedFriends=true
+    │
+    └─ close event arrives
+            → if notifiedFriends=true: send close summary to friends
+            → delete activeSessions doc
+            → write completed session to sessions collection
 ```
-
-Result: backend routes stay thin and stable; complexity is centralized in one wrapper.
 
 ---
 
-## Backend Integration
+## Live Presence (Friend Feed)
 
-## 1) Event Ingestion (existing)
+The `activeSessions` collection doubles as a **real-time presence feed**.
 
-- Endpoint: `POST /api/usage` (or current ingest endpoint)
-- Input: `userId`, `deviceId`, `appName`, `openTime`, `closeTime`
-- Store normalized usage session in Firestore.
+The frontend subscribes to `activeSessions` filtered to the user's friend group via a Firestore real-time listener. No polling needed. When a friend's document appears or disappears, the UI updates immediately showing who is live.
 
-## 2) Notification Evaluation (new backend step)
+The Shame button is shown on each live friend's card. Tapping it calls `POST /api/users/{friendId}/shame`.
 
-Run immediately after each session write:
+---
 
-- Compute `sessionSeconds = closeTime - openTime`
-- Load user notification settings
-- Check active rules:
-  - app is tracked
-  - `sessionSeconds >= thresholdSeconds`
-  - cooldown window has passed
-- If eligible, enqueue/send notification and store audit record
+## Notification Service: Three Invocation Contexts
 
-## 3) Push Delivery
+All three contexts call the same `NotificationService`. The service does not need to know which context invoked it — it receives a typed input and applies the appropriate rules.
 
-- Use stored Expo push token(s) per user/device
-- Send payload through Expo push API
-- Retry failed sends with bounded retries
-- Persist result status
+| Context | Trigger | Notification Types |
+|---|---|---|
+| Session close handler | HTTP request (Shortcut fires) | Daily cap warning, retroactive friend summary |
+| Cron job | Scheduled, every 5 min | Personal threshold, friend alert |
+| Shame endpoint | HTTP request (user taps button) | Manual shame notification |
+
+---
+
+## Vercel Cron (Free Tier)
+
+Vercel's Hobby plan supports cron jobs with a **minimum interval of 1 day** — not 5 minutes.
+
+**Solution: use a free external cron service to call your backend.**
+
+- [cron-job.org](https://cron-job.org) — free, supports 1-minute intervals, calls an HTTP endpoint.
+- Configure it to call `POST /api/cron/check-active-sessions` on your Vercel backend every 5 minutes.
+- Secure the endpoint with a static `CRON_SECRET` header (same pattern as `SHORTCUT_API_KEY`).
+
+This keeps the backend on the free tier with no architectural changes.
 
 ---
 
 ## Firestore Data Model
+
+### `activeSessions/{userId}_{deviceId}_{appName}`
+_(top-level, scanned by cron)_
+
+```json
+{
+  "userId": "string",
+  "deviceId": "string",
+  "appName": "string",
+  "openTime": "ISO timestamp",
+  "notifiedUser": false,
+  "notifiedFriends": false,
+  "createdAt": "ISO timestamp"
+}
+```
 
 ### `users/{userId}/notificationSettings`
 
 ```json
 {
   "enabled": true,
-  "scrollAlertThresholdSeconds": 1200,
+  "userAlertThresholdSeconds": 1200,
+  "friendAlertThresholdSeconds": 1800,
+  "dailyCapSeconds": 3600,
   "cooldownSeconds": 7200,
+  "shameCooldownSeconds": 1800,
   "trackedApps": ["Instagram", "TikTok", "X"],
   "quietHoursStart": "22:30",
   "quietHoursEnd": "07:00",
+  "allowFriendsToSeeLiveSessions": true,
+  "sendCloseSessionSummaryToFriends": true,
   "updatedAt": "<timestamp>"
 }
 ```
@@ -222,91 +188,141 @@ Run immediately after each session write:
 ```
 
 ### `users/{userId}/notifications/{notificationId}`
+_(audit log)_
 
 ```json
 {
-  "type": "scroll_threshold",
+  "type": "threshold_alert | friend_alert | shame | daily_cap | session_summary | streak",
   "appName": "Instagram",
   "sessionSeconds": 1560,
-  "thresholdSeconds": 1200,
   "sentAt": "<timestamp>",
-  "deliveryStatus": "sent",
-  "dedupeKey": "user-app-day-threshold"
+  "deliveryStatus": "sent | skipped | failed",
+  "skipReason": "cooldown | quiet_hours | disabled | below_threshold | no_token | not_friends",
+  "triggeredBy": "cron | session_close | shame_button"
+}
+```
+
+### `shameEvents/{shameId}`
+_(top-level, for rate limiting and future leaderboard)_
+
+```json
+{
+  "fromUserId": "abc",
+  "toUserId": "xyz",
+  "appName": "TikTok",
+  "sentAt": "<timestamp>"
 }
 ```
 
 ---
 
-## Rule Logic (v1)
+## API / Service Additions
 
-For each newly completed session:
+### New Endpoints
 
-1. Ignore if notifications disabled.
-2. Ignore if app not in tracked apps.
-3. Ignore if within quiet hours.
-4. Ignore if `sessionSeconds < threshold`.
-5. Ignore if cooldown not elapsed for same user+app+rule.
-6. Else send:
-   - **Title:** `Take a breath`
-   - **Body:** `You've been on {appName} for {X} minutes. Want to pause now?`
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/users/me/push-token` | Register/update Expo push token |
+| `PUT` | `/api/users/me/notification-settings` | Save all notification preferences |
+| `POST` | `/api/users/{friendId}/shame` | Shame a live friend (rate-limited) |
+| `POST` | `/api/cron/check-active-sessions` | Called by external cron, secured by header |
 
----
+### NotificationService Public Contract
 
-## API/Service Additions
+```python
+class NotificationService:
+    # Called by session close handler
+    async def handle_session_close(self, session: SessionInput) -> NotificationDecision
 
-### Frontend -> Backend
+    # Called by cron job for each stale active session
+    async def handle_active_session_check(self, active: ActiveSessionInput) -> list[NotificationDecision]
 
-1. `PUT /api/users/me/notification-settings`
-   - Save threshold, cooldown, tracked apps, quiet hours
-2. `POST /api/users/me/push-token`
-   - Register/update Expo push token
+    # Called by shame endpoint
+    async def handle_shame(self, from_user_id: str, to_user_id: str) -> NotificationDecision
 
-### Backend internal modules
+    # Low-level: used internally
+    async def send_notification(self, payload: NotificationPayload) -> NotificationDecision
+    async def register_push_token(self, input: PushTokenInput) -> None
+    async def update_settings(self, input: SettingsInput) -> None
+```
 
-- `NotificationService.ts` (public wrapper interface)
-- `NotificationServiceImpl.ts` (orchestrator)
-- `notificationRules.ts` (threshold + cooldown checks)
-- `notificationSender.ts` (Expo push integration)
-- `notificationAudit.ts` (persist sent/skipped/failed)
+### Internal Modules (hidden from API layer)
 
----
-
-## Frontend Integration
-
-1. Request notification permission on onboarding/settings.
-2. Get Expo push token and register with backend.
-3. Add Settings UI:
-   - Enable/disable alerts
-   - Threshold selector (10m / 20m / 30m / custom)
-   - Cooldown selector
-4. Handle notification taps:
-   - Deep-link to Stats screen with context (app + session duration)
+- `NotificationRulesEngine` — threshold, cooldown, quiet hours, friendship checks
+- `NotificationTemplateBuilder` — constructs title/body per notification type
+- `NotificationSender` — calls Expo push API
+- `NotificationAuditRepository` — persists sent/skipped/failed to Firestore
+- `NotificationSettingsRepository` — loads/saves per-user settings
+- `PushTokenRepository` — loads/saves device tokens
+- `ActiveSessionRepository` — read/write/delete `activeSessions` documents
+- `ShameRepository` — reads/writes `shameEvents` for rate limiting
 
 ---
 
-## Observability (must-have)
+## Rule Logic Per Notification Type
 
-Track these metrics from day one:
+### Personal Threshold (cron)
+1. Notifications enabled?
+2. App in user's tracked list?
+3. Not in quiet hours?
+4. `elapsedSeconds >= userAlertThresholdSeconds`?
+5. `notifiedUser == false`?
+6. → Send. Mark `notifiedUser = true`.
 
-- Notifications attempted/sent/failed
-- Open rate (tap-through)
-- Users receiving >N alerts/day (spam signal)
-- Weekly trend: users with decreasing average session length
+### Friend Alert (cron)
+1. User has `allowFriendsToSeeLiveSessions = true`?
+2. `elapsedSeconds >= friendAlertThresholdSeconds`?
+3. `notifiedFriends == false`?
+4. For each group member: notifications enabled? not in quiet hours? cooldown elapsed?
+5. → Fan out. Mark `notifiedFriends = true`.
+
+### Shame Button
+1. Sender and target are friends (in same group)?
+2. Target has a document in `activeSessions`?
+3. No shame sent from this sender to this target within `shameCooldownSeconds`?
+4. Target has a push token?
+5. → Send.
+
+### Daily Cap Warning (session close)
+1. Notifications enabled?
+2. App in tracked list?
+3. `dailySummary.totalSeconds >= dailyCapSeconds`?
+4. Not already sent today for this app?
+5. → Send.
+
+### Session Close Summary (session close)
+1. Corresponding `activeSessions` doc had `notifiedFriends = true`?
+2. User has `sendCloseSessionSummaryToFriends = true`?
+3. For each group member: eligible per their own settings?
+4. → Fan out to friends.
+
+---
+
+## Free Tier Budget
+
+| Service | Usage | Limit | Notes |
+|---|---|---|---|
+| Firestore reads | ~10–20 per cron tick per active session | 50k/day | Fine for small groups |
+| Firestore writes | ~2–4 per session event | 20k/day | Fine |
+| Vercel Functions | Cron endpoint + session endpoints | 100GB bandwidth | Fine |
+| Expo Push | Unlimited | Free | No quota |
+| cron-job.org | Every 5 min = 288 calls/day | Free, unlimited | External cron |
 
 ---
 
 ## Rollout Plan
 
-1. Build v1 threshold + cooldown alerts.
-2. Run internal testing with test users.
-3. Tune defaults (threshold/cooldown) based on alert fatigue and engagement.
-4. Add v2 rules (streak nudges, time-of-day patterns, adaptive goals).
+1. **Phase 1:** Personal threshold alert (cron + activeSessions model).
+2. **Phase 2:** Friend alert + live presence feed + shame button.
+3. **Phase 3:** Daily cap warning, session close summary.
+4. **Phase 4:** Streak reinforcement, adaptive thresholds.
 
 ---
 
 ## Future Extensions
 
-- Progressive escalation (gentle -> stronger language)
-- Goal-based nudges (daily cap reminders)
-- Positive reinforcement notifications (\"You cut usage 18% this week\")
-- Context-aware reminders (late-night doomscrolling intervention)
+- Progressive escalation (gentle → stronger language as session grows)
+- Shame leaderboard ("Most shamed this week")
+- Group challenges ("Nobody scrolls more than 20 min today")
+- Positive reinforcement ("You cut usage 18% this week")
+- Late-night doomscrolling pattern detection

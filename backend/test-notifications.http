@@ -13,7 +13,6 @@
 # PUSH_TOKEN     = ExponentPushToken[xxxx]   (from Expo Go console)
 # FIREBASE_TOKEN = eyJ...                    (from Expo Go console, expires in 1h)
 # DEVICE_ID      = any string, e.g. "my-iphone"
-# CRON_SECRET    = the value you set in Vercel env vars
 
 @base = https://functions-eight-topaz.vercel.app
 
@@ -56,7 +55,6 @@ POST {{base}}/api/usage/record?userId=zJHMK6iYW7M3THkCFZ2bsBv5sbG2&appName=Insta
 # Wait 30+ seconds after step 3, then fire this.
 # You should receive a push notification on your device.
 POST {{base}}/api/cron/check-active-sessions
-x-cron-secret: <CRON_SECRET>
 
 
 ### ── 5. Simulate app CLOSE ─────────────────────────────────────────────────

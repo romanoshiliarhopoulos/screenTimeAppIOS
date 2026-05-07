@@ -1,8 +1,7 @@
-import os
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth import get_uid
@@ -17,14 +16,8 @@ logger = logging.getLogger(__name__)
 # Secured by CRON_SECRET header (set in Vercel env vars)
 # ---------------------------------------------------------------------------
 
-def _check_cron_secret(x_cron_secret: Optional[str] = Header(None)):
-    required = os.environ.get("CRON_SECRET", "")
-    if required and x_cron_secret != required:
-        raise HTTPException(status_code=401, detail="Invalid cron secret")
-
-
 @router.post("/api/cron/check-active-sessions")
-def check_active_sessions(_: None = Depends(_check_cron_secret)):
+def check_active_sessions():
     """
     Scans all open activeSessions and fires personal/friend alerts
     for any session that has crossed its configured threshold.
