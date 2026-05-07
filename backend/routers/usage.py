@@ -7,6 +7,7 @@ from typing import Optional
 from auth import get_uid
 from firestore_client import db
 from models import UsagePayload
+from services.notification import notification_service
 from services.session_service import compute_session
 from services.summary_service import update_daily_summary
 
@@ -34,7 +35,12 @@ def _check_shortcut_key(x_api_key: Optional[str] = Header(None)):
 
 @router.post("/record", status_code=201)
 async def record_usage(
-    payload: ShortcutPayload,
+    payload: Optional[ShortcutPayload] = None,
+    userId: Optional[str] = Query(None),
+    appName: Optional[str] = Query(None),
+    eventType: Optional[str] = Query(None),
+    eventTime: Optional[str] = Query(None),
+    deviceId: Optional[str] = Query(None),
     _: None = Depends(_check_shortcut_key),
 ):
     """
@@ -44,6 +50,14 @@ async def record_usage(
     On every 'close' event, looks up the most recent 'open' event for the
     same (userId, deviceId, appName) tuple and writes a session document.
     """
+    if payload is None:
+        if not userId or not appName or not eventType:
+            raise HTTPException(status_code=422, detail="Missing required fields: userId, appName, eventType")
+        payload = ShortcutPayload(
+            userId=userId, appName=appName, eventType=eventType,
+            eventTime=eventTime, deviceId=deviceId,
+        )
+
     uid = payload.userId
     now = datetime.now(timezone.utc).isoformat()
     event_time = payload.eventTime if payload.eventTime else now
@@ -61,53 +75,54 @@ async def record_usage(
     events_ref.add(event_doc)
 
     if payload.eventType != "close":
+        # Track the open session for live presence + timer-based notifications
+        notification_service.on_session_open(
+            user_id=uid,
+            device_id=payload.deviceId or "",
+            app_name=payload.appName,
+            open_time=event_time,
+        )
         return {"status": "ok", "recorded": "open"}
 
     # --- Session reconstruction on close ---
     sessions_ref = db.collection("users").document(uid).collection("sessions")
-
-    # Single-field filter only (no composite index required).
-    # Extra conditions (deviceId, eventType) are applied in Python.
     device_filter = payload.deviceId or ""
-    candidate_events = list(
+
+    # Fetch recent open events by appName only (single-field — no composite index needed).
+    # Sort and filter in Python to avoid requiring a Firestore composite index.
+    open_event_docs = list(
         events_ref
         .where("appName", "==", payload.appName)
-        .limit(200)
+        .where("eventType", "==", "open")
+        .limit(50)
         .stream()
     )
-    open_events = sorted(
-        [
-            d for d in candidate_events
-            if d.to_dict().get("eventType") == "open"
-            and d.to_dict().get("deviceId", "") == device_filter
-        ],
-        key=lambda d: d.to_dict().get("eventTime", ""),
-        reverse=True,
-    )
+    open_event_docs.sort(key=lambda d: d.to_dict().get("eventTime", ""), reverse=True)
 
-    if not open_events:
+    matching_open = None
+    for d in open_event_docs:
+        if d.to_dict().get("deviceId", "") == device_filter:
+            matching_open = d
+            break
+
+    if not matching_open:
         return {"status": "ok", "recorded": "close", "session": None}
 
-    open_time = open_events[0].to_dict()["eventTime"]
+    open_time = matching_open.to_dict()["eventTime"]
 
-    # Check for unlock pattern — single-field filter, device filter in Python.
+    # Fetch recent sessions by appName only (single-field — no composite index needed).
     previous_close_time: Optional[str] = None
-    candidate_sessions = list(
+    session_docs = list(
         sessions_ref
         .where("appName", "==", payload.appName)
         .limit(50)
         .stream()
     )
-    prev_sessions = sorted(
-        [
-            d for d in candidate_sessions
-            if d.to_dict().get("deviceId", "") == device_filter
-        ],
-        key=lambda d: d.to_dict().get("closeTime", ""),
-        reverse=True,
-    )
-    if prev_sessions:
-        previous_close_time = prev_sessions[0].to_dict().get("closeTime")
+    session_docs.sort(key=lambda d: d.to_dict().get("closeTime", ""), reverse=True)
+    for d in session_docs:
+        if d.to_dict().get("deviceId", "") == device_filter:
+            previous_close_time = d.to_dict().get("closeTime")
+            break
 
     session = compute_session(
         payload.appName,
@@ -118,7 +133,16 @@ async def record_usage(
         previous_close_time,
     )
     sessions_ref.add(session)
-    update_daily_summary(uid, payload.appName, session["openTime"], session["durationSeconds"])
+    daily_total = update_daily_summary(uid, payload.appName, session["openTime"], session["durationSeconds"])
+
+    # Notifications: delete activeSession, check daily cap, send close summary to friends
+    notification_service.on_session_close(
+        user_id=uid,
+        device_id=payload.deviceId or "",
+        app_name=payload.appName,
+        duration_seconds=session["durationSeconds"],
+        daily_total_seconds=daily_total,
+    )
 
     return {"status": "ok", "recorded": "close", "durationSeconds": session["durationSeconds"]}
 
@@ -131,25 +155,20 @@ async def log_usage(payload: UsagePayload, uid: str = Depends(get_uid)):
     """
     sessions_ref = db.collection("users").document(uid).collection("sessions")
 
-    # Check for the unlock pattern — single-field filter to avoid composite index.
+    # Check for the unlock pattern — single-field query, sort in Python.
     previous_close_time: Optional[str] = None
     if payload.device_id:
-        candidate_sessions = list(
+        session_docs = list(
             sessions_ref
             .where("appName", "==", payload.app_name)
             .limit(50)
             .stream()
         )
-        prev_sessions = sorted(
-            [
-                d for d in candidate_sessions
-                if d.to_dict().get("deviceId", "") == payload.device_id
-            ],
-            key=lambda d: d.to_dict().get("closeTime", ""),
-            reverse=True,
-        )
-        if prev_sessions:
-            previous_close_time = prev_sessions[0].to_dict().get("closeTime")
+        session_docs.sort(key=lambda d: d.to_dict().get("closeTime", ""), reverse=True)
+        for d in session_docs:
+            if d.to_dict().get("deviceId", "") == payload.device_id:
+                previous_close_time = d.to_dict().get("closeTime")
+                break
 
     session = compute_session(
         payload.app_name,
@@ -160,7 +179,15 @@ async def log_usage(payload: UsagePayload, uid: str = Depends(get_uid)):
         previous_close_time,
     )
     sessions_ref.add(session)
-    update_daily_summary(uid, payload.app_name, session["openTime"], session["durationSeconds"])
+    daily_total = update_daily_summary(uid, payload.app_name, session["openTime"], session["durationSeconds"])
+
+    notification_service.on_session_close(
+        user_id=uid,
+        device_id=payload.device_id or "",
+        app_name=payload.app_name,
+        duration_seconds=session["durationSeconds"],
+        daily_total_seconds=daily_total,
+    )
 
     return {"status": "ok", "durationSeconds": session["durationSeconds"], "status_flag": session["status"]}
 

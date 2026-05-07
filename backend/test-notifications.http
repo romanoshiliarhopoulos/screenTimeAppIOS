@@ -1,0 +1,80 @@
+# Notification Service — Manual Test Requests
+#
+# Prerequisites:
+#   1. Run backend: cd backend && uvicorn main:app --reload --port 8000
+#   2. Open the app in Expo Go on your device — HomeScreen will print to console:
+#        [DEBUG] Expo push token: ExponentPushToken[...]
+#        [DEBUG] Firebase ID token: eyJ...
+#   3. Paste those values into the variables below.
+#
+# USER_ID is pre-filled. Replace PUSH_TOKEN and FIREBASE_TOKEN after running the app.
+
+# Variables (fill these in after running the app on device)
+# PUSH_TOKEN     = ExponentPushToken[xxxx]   (from Expo Go console)
+# FIREBASE_TOKEN = eyJ...                    (from Expo Go console, expires in 1h)
+# DEVICE_ID      = any string, e.g. "my-iphone"
+# CRON_SECRET    = the value you set in Vercel env vars
+
+@base = https://functions-eight-topaz.vercel.app
+
+
+### ── 1. Register your push token ──────────────────────────────────────────
+POST {{base}}/api/users/me/push-token
+Content-Type: application/json
+Authorization: Bearer <FIREBASE_TOKEN>
+
+{
+  "deviceId": "my-iphone",
+  "expoPushToken": "<PUSH_TOKEN>",
+  "platform": "ios"
+}
+
+
+### ── 2. Set short thresholds for testing (30s personal, 60s friends) ──────
+# Real defaults are 420s (7 min) and 900s (15 min).
+PUT {{base}}/api/users/me/notification-settings
+Content-Type: application/json
+Authorization: Bearer <FIREBASE_TOKEN>
+
+{
+  "enabled": true,
+  "userAlertThresholdSeconds": 30,
+  "friendAlertThresholdSeconds": 60,
+  "trackedApps": ["Instagram", "TikTok", "TestApp"],
+  "allowFriendsToSeeLiveSessions": true,
+  "sendCloseSessionSummaryToFriends": true
+}
+
+
+### ── 3. Simulate app OPEN ──────────────────────────────────────────────────
+# No auth required — uses shortcut endpoint.
+# Check Firestore activeSessions collection to confirm doc appears.
+POST {{base}}/api/usage/record?userId=zJHMK6iYW7M3THkCFZ2bsBv5sbG2&appName=Instagram&eventType=open&deviceId=my-iphone
+
+
+### ── 4. Manually trigger the cron ─────────────────────────────────────────
+# Wait 30+ seconds after step 3, then fire this.
+# You should receive a push notification on your device.
+POST {{base}}/api/cron/check-active-sessions
+x-cron-secret: <CRON_SECRET>
+
+
+### ── 5. Simulate app CLOSE ─────────────────────────────────────────────────
+POST {{base}}/api/usage/record?userId=zJHMK6iYW7M3THkCFZ2bsBv5sbG2&appName=Instagram&eventType=close&deviceId=my-iphone
+
+
+### ── 6. Check live friends (should be empty after close) ───────────────────
+GET {{base}}/api/users/me/live-friends
+Authorization: Bearer <FIREBASE_TOKEN>
+
+
+### ── 7. Shame endpoint ──────────────────────────────────────────────────────
+# Replace FRIEND_USER_ID with the UID of a user in the same group as you.
+POST {{base}}/api/users/<FRIEND_USER_ID>/shame
+Authorization: Bearer <FIREBASE_TOKEN>
+
+
+### ── 8. Verify notification audit log in Firestore ────────────────────────
+# There's no GET endpoint for this yet — check directly in Firestore console:
+#   users/zJHMK6iYW7M3THkCFZ2bsBv5sbG2/notifications/
+# You should see docs with type, deliveryStatus, triggeredBy, etc.
