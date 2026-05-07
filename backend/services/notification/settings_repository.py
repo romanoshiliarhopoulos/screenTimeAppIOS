@@ -17,6 +17,7 @@ def load(user_id: str) -> NotificationSettings:
     d = doc.to_dict()
     return NotificationSettings(
         enabled=d.get("enabled", True),
+        barkApiKey=d.get("barkApiKey"),
         userAlertThresholdSeconds=d.get("userAlertThresholdSeconds", 420),
         friendAlertThresholdSeconds=d.get("friendAlertThresholdSeconds", 900),
         dailyCapSeconds=d.get("dailyCapSeconds", 3600),

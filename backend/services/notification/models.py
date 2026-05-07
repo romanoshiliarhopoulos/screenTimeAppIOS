@@ -5,6 +5,7 @@ from typing import Literal, Optional, Union
 @dataclass
 class NotificationSettings:
     enabled: bool = True
+    barkApiKey: Optional[str] = None
     userAlertThresholdSeconds: int = 420       # 7 minutes
     friendAlertThresholdSeconds: int = 900     # 15 minutes
     dailyCapSeconds: int = 3600                # 1 hour

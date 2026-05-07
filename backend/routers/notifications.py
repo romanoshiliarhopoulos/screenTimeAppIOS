@@ -70,6 +70,7 @@ def register_push_token(payload: PushTokenPayload, uid: str = Depends(get_uid)):
 
 class NotificationSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
+    barkApiKey: Optional[str] = None
     userAlertThresholdSeconds: Optional[int] = None
     friendAlertThresholdSeconds: Optional[int] = None
     dailyCapSeconds: Optional[int] = None
@@ -82,6 +83,24 @@ class NotificationSettingsPayload(BaseModel):
     sendCloseSessionSummaryToFriends: Optional[bool] = None
 
 
+@router.get("/api/users/me/notification-settings", status_code=200)
+def get_notification_settings(uid: str = Depends(get_uid)):
+    """Get notification settings for the authenticated user."""
+    from services.notification.settings_repository import load
+    settings = load(uid)
+    return {
+        "enabled": settings.enabled,
+        "barkApiKey": settings.barkApiKey,
+        "userAlertThresholdSeconds": settings.userAlertThresholdSeconds,
+        "friendAlertThresholdSeconds": settings.friendAlertThresholdSeconds,
+        "dailyCapSeconds": settings.dailyCapSeconds,
+        "trackedApps": settings.trackedApps,
+        "quietHoursStart": settings.quietHoursStart,
+        "quietHoursEnd": settings.quietHoursEnd,
+        "allowFriendsToSeeLiveSessions": settings.allowFriendsToSeeLiveSessions,
+    }
+
+
 @router.put("/api/users/me/notification-settings", status_code=200)
 def update_notification_settings(
     payload: NotificationSettingsPayload, uid: str = Depends(get_uid)
@@ -90,6 +109,17 @@ def update_notification_settings(
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
     notification_service.update_settings(user_id=uid, data=data)
     return {"status": "ok"}
+
+
+@router.post("/api/users/me/test-notification", status_code=200)
+def send_test_notification(uid: str = Depends(get_uid)):
+    """Send a test notification to the authenticated user's configured device."""
+    from services.notification import push_token_repository, sender
+    tokens = push_token_repository.get_tokens_for_user(uid)
+    if not tokens:
+        return {"status": "error", "reason": "no_token"}
+    ticket = sender.send(tokens[0], "Test notification", "Your notifications are working!")
+    return {"status": ticket.get("status", "ok")}
 
 
 # ---------------------------------------------------------------------------

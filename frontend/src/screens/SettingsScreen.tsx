@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -17,7 +17,26 @@ const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 
 export default function SettingsScreen() {
   const [displayName, setDisplayName] = useState('');
+  const [barkApiKey, setBarkApiKey] = useState('');
   const [saving, setSaving] = useState(false);
+  const [savingBark, setSavingBark] = useState(false);
+  const [testingNotif, setTestingNotif] = useState(false);
+
+  useEffect(() => {
+    async function loadSettings() {
+      try {
+        const token = await auth.currentUser?.getIdToken();
+        const res = await fetch(`${API_URL}/api/users/me/notification-settings`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.barkApiKey) setBarkApiKey(data.barkApiKey);
+        }
+      } catch (_) {}
+    }
+    loadSettings();
+  }, []);
 
   async function handleSaveName() {
     if (!displayName.trim()) return;
@@ -38,14 +57,50 @@ export default function SettingsScreen() {
     }
   }
 
+  async function handleSaveBarkKey() {
+    if (!barkApiKey.trim()) return;
+    setSavingBark(true);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch(`${API_URL}/api/users/me/notification-settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ barkApiKey: barkApiKey.trim() }),
+      });
+      if (!res.ok) throw new Error('Failed to save');
+      Alert.alert('Saved', 'Bark API key saved. Tap Test to verify.');
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    } finally {
+      setSavingBark(false);
+    }
+  }
+
+  async function handleTestNotification() {
+    setTestingNotif(true);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch(`${API_URL}/api/users/me/test-notification`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        Alert.alert('Sent', 'Check your Bark app.');
+      } else {
+        Alert.alert('Failed', data.reason ?? 'No token saved yet.');
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    } finally {
+      setTestingNotif(false);
+    }
+  }
+
   async function handleSignOut() {
     Alert.alert('Sign out', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign out',
-        style: 'destructive',
-        onPress: () => signOut(auth),
-      },
+      { text: 'Sign out', style: 'destructive', onPress: () => signOut(auth) },
     ]);
   }
 
@@ -77,11 +132,38 @@ export default function SettingsScreen() {
           onPress={handleSaveName}
           disabled={saving || !displayName.trim()}
         >
-          {saving ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.primaryButtonText}>Save</Text>
-          )}
+          {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Save</Text>}
+        </TouchableOpacity>
+      </View>
+
+      <Text style={styles.sectionHeader}>Notifications</Text>
+      <View style={styles.card}>
+        <Text style={styles.fieldLabel}>Bark API Key</Text>
+        <Text style={styles.fieldHint}>
+          Install the Bark app → copy your key from the home screen → paste it here.
+        </Text>
+        <TextInput
+          style={styles.input}
+          placeholder="e.g. RjS5zcFdESzKpSfePygGLG"
+          placeholderTextColor={colors.textTertiary}
+          value={barkApiKey}
+          onChangeText={setBarkApiKey}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        <TouchableOpacity
+          style={[styles.primaryButton, !barkApiKey.trim() && styles.primaryButtonDisabled]}
+          onPress={handleSaveBarkKey}
+          disabled={savingBark || !barkApiKey.trim()}
+        >
+          {savingBark ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Save</Text>}
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.secondaryButton, !barkApiKey.trim() && styles.primaryButtonDisabled]}
+          onPress={handleTestNotification}
+          disabled={testingNotif || !barkApiKey.trim()}
+        >
+          {testingNotif ? <ActivityIndicator color={colors.accentPrimary} /> : <Text style={styles.secondaryButtonText}>Send Test Notification</Text>}
         </TouchableOpacity>
       </View>
 
@@ -128,6 +210,11 @@ const styles = StyleSheet.create({
     fontSize: fontSize.small,
     color: colors.textTertiary,
   },
+  fieldHint: {
+    fontSize: fontSize.small,
+    color: colors.textSecondary,
+    lineHeight: 18,
+  },
   fieldValue: {
     fontSize: fontSize.body,
     color: colors.textPrimary,
@@ -153,6 +240,18 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: '#fff',
+    fontSize: fontSize.body,
+    fontWeight: '600',
+  },
+  secondaryButton: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.accentPrimary,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  secondaryButtonText: {
+    color: colors.accentPrimary,
     fontSize: fontSize.body,
     fontWeight: '600',
   },
