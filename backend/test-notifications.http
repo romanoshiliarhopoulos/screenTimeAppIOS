@@ -17,14 +17,16 @@
 @base = https://functions-eight-topaz.vercel.app
 
 
-### ── 1. Register your push token ──────────────────────────────────────────
+### ── 1. Register your ntfy topic as push token ─────────────────────────────
+# Replace screentimeapp-romanos-test with whatever topic you subscribed to in the ntfy app.
+# The "ntfy:" prefix tells the backend to use ntfy instead of Expo.
 POST {{base}}/api/users/me/push-token
 Content-Type: application/json
 Authorization: Bearer <FIREBASE_TOKEN>
 
 {
   "deviceId": "my-iphone",
-  "expoPushToken": "<PUSH_TOKEN>",
+  "expoPushToken": "ntfy:screentimeapp-romanos-test",
   "platform": "ios"
 }
 

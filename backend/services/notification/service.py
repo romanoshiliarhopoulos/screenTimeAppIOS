@@ -117,7 +117,7 @@ class NotificationService:
         fires personal + friend alerts as appropriate.
         Returns a list of result summaries for logging.
         """
-        min_threshold = 420  # 7 minutes — personal alert lower bound
+        min_threshold = 30  # query anything older than 30s, per-user settings decide the rest
         stale = active_session_repository.get_all_stale(min_threshold)
 
         summaries = []
