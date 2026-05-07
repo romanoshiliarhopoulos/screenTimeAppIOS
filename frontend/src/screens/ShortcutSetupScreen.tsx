@@ -8,43 +8,65 @@ import {
   Linking,
   Alert,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { auth } from '../lib/firebase';
 import { colors, spacing, fontSize } from '../theme';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 
-const APPS_TO_TRACK = ['Instagram', 'TikTok', 'YouTube', 'Twitter', 'Reddit'];
+const APPS = [
+  'Instagram',
+  'YouTube',
+  'Facebook',
+  'TikTok',
+  'X',
+  'Snapchat',
+  'Reddit',
+  'Threads',
+  'WhatsApp',
+  'Discord',
+  'Twitch',
+  'LinkedIn',
+];
 
 const AUTOMATION_STEPS = [
   'Open the Shortcuts app',
   'Go to the Automations tab',
   'Tap "+" → New Automation → App',
-  'Select the app (e.g. Instagram)',
-  'Check "Is Opened" and "Is Closed"',
+  'Select the app and check "Is Opened"',
   'Tap Next → Add Action → Run Shortcut',
-  'Select the shortcut you just added',
-  'Disable "Ask Before Running" → Done',
+  'Pick "Track [App] Open" → disable "Ask Before Running" → Done',
+  'Repeat, choosing "Is Closed" and "Track [App] Close"',
 ];
 
-export default function ShortcutSetupScreen() {
-  const [downloading, setDownloading] = useState<string | null>(null);
-  const [done, setDone] = useState<Set<string>>(new Set());
+type DoneKey = `${string}-${'open' | 'close'}`;
 
-  async function downloadShortcut(appName: string) {
-    const uid = auth.currentUser?.uid;
-    if (!uid) {
-      Alert.alert('Error', 'You must be signed in.');
-      return;
-    }
-    setDownloading(appName);
+export default function ShortcutSetupScreen() {
+  const [loading, setLoading] = useState<string | null>(null);
+  const [done, setDone] = useState<Set<DoneKey>>(new Set());
+  const [copied, setCopied] = useState(false);
+  const userId = auth.currentUser?.uid ?? '';
+
+  function copyUserId() {
+    Clipboard.setStringAsync(userId);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function download(appName: string, event: 'open' | 'close') {
+    const key: DoneKey = `${appName}-${event}`;
+    setLoading(key);
     try {
-      const url = `${API_URL}/api/shortcuts/generate?userId=${uid}&app=${encodeURIComponent(appName)}`;
+      const url =
+        `${API_URL}/api/shortcuts/download` +
+        `?appName=${encodeURIComponent(appName)}` +
+        `&event=${event}`;
       await Linking.openURL(url);
-      setDone((prev) => new Set(prev).add(appName));
+      setDone((prev) => new Set(prev).add(key));
     } catch {
       Alert.alert('Error', 'Could not open the shortcut download.');
     } finally {
-      setDownloading(null);
+      setLoading(null);
     }
   }
 
@@ -56,43 +78,81 @@ export default function ShortcutSetupScreen() {
     >
       <Text style={styles.pageTitle}>Set Up Shortcuts</Text>
       <Text style={styles.intro}>
-        iOS Shortcuts automatically log when you open and close tracked apps — no
-        background permissions needed.
+        iOS Shortcuts automatically log when you open and close tracked apps —
+        no background permissions needed.
+      </Text>
+
+      {/* User ID card */}
+      <View style={styles.userIdCard}>
+        <Text style={styles.userIdLabel}>Your User ID</Text>
+        <Text style={styles.userIdValue} numberOfLines={1} ellipsizeMode="middle">
+          {userId}
+        </Text>
+        <TouchableOpacity style={styles.copyBtn} onPress={copyUserId}>
+          <Text style={styles.copyBtnText}>{copied ? 'Copied!' : 'Copy'}</Text>
+        </TouchableOpacity>
+      </View>
+      <Text style={styles.userIdHint}>
+        iOS will ask for this once when you install each shortcut.
       </Text>
 
       {/* Step 1 */}
       <Text style={styles.sectionHeader}>Step 1 — Download Shortcuts</Text>
       <Text style={styles.stepNote}>
-        Tap each app you want to track. Shortcuts will open with an "Add Shortcut" dialog — tap Add.
+        Download both Open and Close shortcuts for each app you want to track.
+        Safari will prompt you to add them.
       </Text>
+
       <View style={styles.card}>
-        {APPS_TO_TRACK.map((app) => (
-          <TouchableOpacity
-            key={app}
-            style={[styles.appRow, done.has(app) && styles.appRowDone]}
-            onPress={() => downloadShortcut(app)}
-            disabled={downloading === app}
-          >
-            <Text style={styles.appName}>{app}</Text>
-            {done.has(app) ? (
-              <Text style={styles.doneLabel}>Added</Text>
-            ) : (
-              <Text style={styles.downloadLabel}>
-                {downloading === app ? 'Opening…' : 'Download'}
-              </Text>
-            )}
-          </TouchableOpacity>
-        ))}
+        {APPS.map((app, i) => {
+          const openDone = done.has(`${app}-open`);
+          const closeDone = done.has(`${app}-close`);
+          const isLast = i === APPS.length - 1;
+          return (
+            <View
+              key={app}
+              style={[styles.appRow, !isLast && styles.appRowBorder]}
+            >
+              <Text style={styles.appName}>{app}</Text>
+              <View style={styles.btnGroup}>
+                <TouchableOpacity
+                  style={[styles.btn, openDone && styles.btnDone]}
+                  onPress={() => download(app, 'open')}
+                  disabled={loading === `${app}-open`}
+                >
+                  <Text style={[styles.btnText, openDone && styles.btnTextDone]}>
+                    {loading === `${app}-open` ? '…' : openDone ? 'Open ✓' : 'Open ↓'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.btn, closeDone && styles.btnDone]}
+                  onPress={() => download(app, 'close')}
+                  disabled={loading === `${app}-close`}
+                >
+                  <Text style={[styles.btnText, closeDone && styles.btnTextDone]}>
+                    {loading === `${app}-close` ? '…' : closeDone ? 'Close ✓' : 'Close ↓'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          );
+        })}
       </View>
 
       {/* Step 2 */}
       <Text style={styles.sectionHeader}>Step 2 — Set Up Automations</Text>
       <Text style={styles.stepNote}>
-        Do this once per app. It takes about 30 seconds each.
+        Do this once per app (~30 seconds each).
       </Text>
       <View style={styles.card}>
         {AUTOMATION_STEPS.map((step, i) => (
-          <View key={i} style={[styles.stepRow, i < AUTOMATION_STEPS.length - 1 && styles.stepRowBorder]}>
+          <View
+            key={i}
+            style={[
+              styles.stepRow,
+              i < AUTOMATION_STEPS.length - 1 && styles.stepRowBorder,
+            ]}
+          >
             <View style={styles.stepNumber}>
               <Text style={styles.stepNumberText}>{i + 1}</Text>
             </View>
@@ -101,11 +161,10 @@ export default function ShortcutSetupScreen() {
         ))}
       </View>
 
-      {/* Note */}
       <View style={styles.noteCard}>
         <Text style={styles.noteText}>
-          If you add or remove apps, come back here to download the updated Shortcuts.
-          Old shortcuts can be deleted in the Shortcuts app.
+          If iOS shows an "Untrusted Shortcut" warning, go to Settings →
+          Shortcuts → Allow Untrusted Shortcuts, then retry.
         </Text>
       </View>
     </ScrollView>
@@ -158,27 +217,39 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: spacing.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  appRowBorder: {
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
-  appRowDone: {
-    opacity: 0.5,
-  },
   appName: {
-    fontSize: fontSize.title,
+    fontSize: fontSize.body,
     fontWeight: '600',
     color: colors.textPrimary,
+    flex: 1,
   },
-  downloadLabel: {
-    fontSize: fontSize.body,
+  btnGroup: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  btn: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: colors.surface2,
+  },
+  btnDone: {
+    backgroundColor: 'transparent',
+  },
+  btnText: {
+    fontSize: fontSize.small,
+    fontWeight: '600',
     color: colors.accentPrimary,
-    fontWeight: '500',
   },
-  doneLabel: {
-    fontSize: fontSize.body,
+  btnTextDone: {
     color: colors.success,
-    fontWeight: '500',
   },
   stepRow: {
     flexDirection: 'row',
@@ -210,6 +281,45 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     flex: 1,
     lineHeight: 20,
+  },
+  userIdCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface1,
+    borderRadius: 8,
+    padding: spacing.md,
+    marginBottom: spacing.xs,
+    gap: spacing.sm,
+  },
+  userIdLabel: {
+    fontSize: fontSize.small,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    flexShrink: 0,
+  },
+  userIdValue: {
+    flex: 1,
+    fontSize: fontSize.small,
+    color: colors.textPrimary,
+    fontWeight: '500',
+  },
+  copyBtn: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: colors.surface2,
+    flexShrink: 0,
+  },
+  copyBtnText: {
+    fontSize: fontSize.small,
+    fontWeight: '600',
+    color: colors.accentPrimary,
+  },
+  userIdHint: {
+    fontSize: fontSize.small,
+    color: colors.textTertiary,
+    marginBottom: spacing.lg,
+    marginTop: spacing.xs,
   },
   noteCard: {
     backgroundColor: colors.surface1,
