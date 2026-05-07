@@ -4,6 +4,7 @@ import httpx
 
 EXPO_PUSH_URL = "https://exp.host/--/exponent-push-notification/send"
 NTFY_BASE_URL = "https://ntfy.sh"
+BARK_BASE_URL = "https://api.day.app"
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,8 @@ def send(token: str, title: str, body: str, data: dict | None = None) -> dict:
     """
     if token.startswith("ntfy:"):
         return _send_ntfy(topic=token[5:], title=title, body=body)
+    if token.startswith("bark:"):
+        return _send_bark(key=token[5:], title=title, body=body)
     return _send_expo(token=token, title=title, body=body, data=data)
 
 
@@ -38,6 +41,19 @@ def _send_expo(token: str, title: str, body: str, data: dict | None) -> dict:
         return response.json().get("data", {})
     except httpx.HTTPError as exc:
         logger.error("Expo push failed: %s", exc)
+        return {"status": "error", "message": str(exc)}
+
+
+def _send_bark(key: str, title: str, body: str) -> dict:
+    try:
+        response = httpx.get(
+            f"{BARK_BASE_URL}/{key}/{title}/{body}",
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        return {"status": "ok"}
+    except httpx.HTTPError as exc:
+        logger.error("Bark push failed: %s", exc)
         return {"status": "error", "message": str(exc)}
 
 
