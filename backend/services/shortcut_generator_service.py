@@ -45,17 +45,35 @@ def _variable_item(key: str, output_name: str, output_uuid: str) -> dict:
 
 
 def build_shortcut_plist(
-    user_id: str,
     app_name: str,
     event_type: Literal["open", "close"],
     api_url: str,
     api_key: str,
 ) -> bytes:
-    date_uuid = str(uuid.uuid4()).upper()
+    """
+    Builds a shortcut plist with an Import Question for userId.
+    Actions:
+      0 — Get Current Date
+      1 — Format Date (ISO 8601)        → "Formatted Time"
+      2 — Text: userId placeholder      → "User ID"  ← Import Question fills this
+      3 — POST to /api/usage/record     (URL contains inline variable tokens for userId + eventTime)
+    """
+    date_uuid   = str(uuid.uuid4()).upper()
     format_uuid = str(uuid.uuid4()).upper()
+    userid_uuid = str(uuid.uuid4()).upper()
+
+    # Build the request URL string with \ufffc placeholders for userId and eventTime.
+    # Embedding params in the URL is the most reliable way to send data from iOS Shortcuts
+    # — no body format ambiguity, works on every iOS version.
+    base      = f"{api_url}/api/usage/record?userId="
+    mid       = f"&appName={app_name}&eventType={event_type}&eventTime="
+    url_str   = base + "\ufffc" + mid + "\ufffc"
+    userid_pos    = len(base)
+    eventtime_pos = len(base) + 1 + len(mid)
 
     plist = {
         "WFWorkflowActions": [
+            # 0 — capture timestamp
             {
                 "WFWorkflowActionIdentifier": "is.workflow.actions.date",
                 "WFWorkflowActionParameters": {
@@ -63,13 +81,14 @@ def build_shortcut_plist(
                     "CustomOutputName": "Event Time",
                 },
             },
+            # 1 — format as ISO 8601
             {
                 "WFWorkflowActionIdentifier": "is.workflow.actions.format.date",
                 "WFWorkflowActionParameters": {
                     "UUID": format_uuid,
                     "CustomOutputName": "Formatted Time",
-                    "WFDateFormatStyle": "Custom",
-                    "WFDateFormat": "yyyy-MM-dd'T'HH:mm:ssZZZZZ",
+                    "WFDateFormatStyle": "ISO 8601",
+                    "WFISO8601IncludeTime": True,
                     "WFInput": {
                         "Value": {
                             "OutputName": "Event Time",
@@ -80,11 +99,41 @@ def build_shortcut_plist(
                     },
                 },
             },
+            # 2 — userId text (filled by Import Question at install time)
+            {
+                "WFWorkflowActionIdentifier": "is.workflow.actions.gettext",
+                "WFWorkflowActionParameters": {
+                    "UUID": userid_uuid,
+                    "CustomOutputName": "User ID",
+                    "WFTextActionText": {
+                        "Value": {"string": "PASTE_YOUR_USER_ID_HERE"},
+                        "WFSerializationType": "WFTextTokenString",
+                    },
+                },
+            },
+            # 3 — POST to the URL with inline variable substitution directly in WFURL
             {
                 "WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
                 "WFWorkflowActionParameters": {
                     "WFHTTPMethod": "POST",
-                    "WFURL": f"{api_url}/api/usage/record",
+                    "WFURL": {
+                        "Value": {
+                            "string": url_str,
+                            "attachmentsByRange": {
+                                f"{{{userid_pos}, 1}}": {
+                                    "OutputName": "User ID",
+                                    "OutputUUID": userid_uuid,
+                                    "Type": "ActionOutput",
+                                },
+                                f"{{{eventtime_pos}, 1}}": {
+                                    "OutputName": "Formatted Time",
+                                    "OutputUUID": format_uuid,
+                                    "Type": "ActionOutput",
+                                },
+                            },
+                        },
+                        "WFSerializationType": "WFTextTokenString",
+                    },
                     "WFHTTPHeaders": {
                         "Value": {
                             "WFDictionaryFieldValueItems": [
@@ -93,20 +142,18 @@ def build_shortcut_plist(
                         },
                         "WFSerializationType": "WFDictionaryFieldValue",
                     },
-                    "WFHTTPBodyType": "JSON",
-                    "WFHTTPRequestBody": {
-                        "Value": {
-                            "WFDictionaryFieldValueItems": [
-                                _text_item("userId", user_id),
-                                _text_item("appName", app_name),
-                                _text_item("eventType", event_type),
-                                _variable_item("eventTime", "Formatted Time", format_uuid),
-                            ]
-                        },
-                        "WFSerializationType": "WFDictionaryFieldValue",
-                    },
                 },
             },
+        ],
+        # Import Question — prompts once at install to fill the userId Text action (index 2)
+        "WFWorkflowImportQuestions": [
+            {
+                "ActionIndex": 2,
+                "Category": "Parameter",
+                "DefaultValue": "",
+                "ParameterKey": "WFTextActionText",
+                "Text": "Your User ID (copy from the app's Setup screen)",
+            }
         ],
         "WFWorkflowClientVersion": "1300.0.0.0.0",
         "WFWorkflowHasShortcutInputVariables": False,
@@ -114,7 +161,6 @@ def build_shortcut_plist(
             "WFWorkflowIconStartColor": 946986751,
             "WFWorkflowIconGlyphNumber": 59511,
         },
-        "WFWorkflowImportQuestions": [],
         "WFWorkflowInputContentItemClasses": [],
         "WFWorkflowMinimumClientVersion": 900,
         "WFWorkflowMinimumClientVersionString": "900",
@@ -127,13 +173,9 @@ def build_shortcut_plist(
 
 
 def sign_shortcut(unsigned_bytes: bytes) -> bytes:
-    """
-    On macOS: signs via the system `shortcuts` CLI (no warning on install).
-    On Linux/Vercel: returns unsigned bytes — iOS installs after the user
-    enables Settings → Shortcuts → Allow Untrusted Shortcuts once.
-    """
+    """Signs via macOS `shortcuts sign`. Must be run on a Mac."""
     if platform.system() != "Darwin":
-        return unsigned_bytes
+        raise RuntimeError("Signing requires macOS. Run generate_shortcuts.py locally.")
 
     tmp_in = tmp_out = None
     try:
@@ -147,30 +189,12 @@ def sign_shortcut(unsigned_bytes: bytes) -> bytes:
             capture_output=True,
             timeout=15,
         )
-        if result.returncode == 0:
-            with open(tmp_out, "rb") as f:
-                return f.read()
-    except Exception:
-        pass
+        if result.returncode != 0:
+            raise RuntimeError(f"shortcuts sign failed: {result.stderr.decode()}")
+
+        with open(tmp_out, "rb") as f:
+            return f.read()
     finally:
         for p in [tmp_in, tmp_out]:
             if p and os.path.exists(p):
                 os.unlink(p)
-
-    return unsigned_bytes
-
-
-def generate_shortcut(
-    user_id: str,
-    app_name: str,
-    event_type: Literal["open", "close"],
-) -> bytes:
-    """Entry point for the router — builds and signs a shortcut."""
-    api_url = os.environ.get("API_URL", "").rstrip("/")
-    api_key = os.environ.get("SHORTCUT_API_KEY", "")
-
-    if not api_url:
-        raise ValueError("API_URL env var not set")
-
-    plist_bytes = build_shortcut_plist(user_id, app_name, event_type, api_url, api_key)
-    return sign_shortcut(plist_bytes)
