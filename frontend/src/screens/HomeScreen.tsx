@@ -21,42 +21,64 @@ import { colors, spacing, fontSize } from "../theme";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
-function formatDuration(seconds: number): string {
-  if (seconds === 0) return "0m";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
+function fmt(s: number): string {
+  if (s === 0) return "0m";
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
   if (h > 0 && m > 0) return `${h}h ${m}m`;
   if (h > 0) return `${h}h`;
   if (m === 0) return "<1m";
   return `${m}m`;
 }
 
-function formatDate(): string {
-  return new Date().toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
+function relTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
-function formatCooldown(until: string): string {
-  const remaining = Math.max(0, new Date(until).getTime() - Date.now());
-  const mins = Math.floor(remaining / 60000);
-  const secs = Math.floor((remaining % 60000) / 1000);
-  return `${mins}:${String(secs).padStart(2, "0")}`;
+function pctChange(today: number, yesterday: number): number | null {
+  if (yesterday === 0) return null;
+  return Math.round(((today - yesterday) / yesterday) * 100);
 }
 
-// ── Types ────────────────────────────────────────────────────────────
+function shameEmoji(type: string): string {
+  switch (type) {
+    case "excessive_opens": return "🚨";
+    case "shame_bypass":    return "👻";
+    case "streak_broken":   return "💀";
+    case "late_night":      return "🌙";
+    case "daily_limit":     return "⏰";
+    default:                return "🏛️";
+  }
+}
+
+function shameDesc(entry: WallEntry): string {
+  const d = entry.detail || {};
+  switch (entry.type) {
+    case "excessive_opens": return `Opened ${d.appName || "an app"} ${d.openCount || "?"} times`;
+    case "shame_bypass":    return `Skipped a shame from ${d.fromName || "a friend"}`;
+    case "streak_broken":   return `Broke a ${d.streakDays || "??"}-day streak`;
+    case "late_night":      return `Scrolling ${d.appName || ""} at ${d.time || "late night"}`;
+    case "daily_limit":     return `Exceeded daily limit on ${d.appName || "an app"}`;
+    default:                return entry.type.replace(/_/g, " ");
+  }
+}
+
+// ── Types ────────────────────────────────────────────────────────────────────
 
 type FriendData = {
   userId: string;
   displayName: string;
   status: "live" | "recent" | "offline" | "hidden";
   currentApp?: string;
-  sessionStart?: string;
   sessionMinutes?: number;
+  lastSeenMinsAgo?: number | null;
   totalTodaySeconds?: number;
   dailyLimitPct?: number;
   totalOpens?: number;
@@ -67,27 +89,37 @@ type FriendData = {
 };
 
 type MeData = {
-  userId: string;
   totalTodaySeconds: number;
   dailyLimitPct: number;
   totalOpens: number;
   currentApp?: string;
   sessionMinutes?: number;
+  yesterdaySeconds: number;
+  yesterdayOpens: number;
 };
 
-const QUICK_REACTIONS = [
-  { emoji: "angry", label: "Disappointed", icon: "😤" },
-  { emoji: "facepalm", label: "Facepalm", icon: "🤦" },
-  { emoji: "eyes", label: "Watching you", icon: "👀" },
-  { emoji: "emergency", label: "Emergency", icon: "🚨" },
+type WallEntry = {
+  id: string;
+  userId: string;
+  displayName: string;
+  type: string;
+  detail: Record<string, any>;
+  createdAt: string;
+};
+
+const REACTIONS = [
+  { emoji: "angry",     icon: "😤", label: "Disappointed" },
+  { emoji: "facepalm",  icon: "🤦", label: "Facepalm" },
+  { emoji: "eyes",      icon: "👀", label: "Watching" },
+  { emoji: "emergency", icon: "🚨", label: "Emergency" },
 ];
 
-// ── Component ────────────────────────────────────────────────────────
+// ── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function HomeScreen() {
   const navigation = useNavigation<any>();
 
-  // Push token registration
+  // Push token
   useEffect(() => {
     async function registerToken() {
       if (!Device.isDevice) return;
@@ -98,15 +130,8 @@ export default function HomeScreen() {
       if (!idToken) return;
       fetch(`${API_URL}/api/users/me/push-token`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          deviceId: "default",
-          expoPushToken: pushToken,
-          platform: "ios",
-        }),
+        headers: { Authorization: `Bearer ${idToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId: "default", expoPushToken: pushToken, platform: "ios" }),
       }).catch(() => {});
     }
     registerToken();
@@ -114,57 +139,52 @@ export default function HomeScreen() {
 
   const [friends, setFriends] = useState<FriendData[]>([]);
   const [me, setMe] = useState<MeData | null>(null);
+  const [wall, setWall] = useState<WallEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [shamingFriend, setShamingFriend] = useState<string | null>(null);
-  const [showReactions, setShowReactions] = useState<string | null>(null);
+  const [shamingId, setShamingId] = useState<string | null>(null);
+  const [reactionsFor, setReactionsFor] = useState<string | null>(null);
   const [cooldownTick, setCooldownTick] = useState(0);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
-  // Pulse animation for live indicator
   useEffect(() => {
-    const pulse = Animated.loop(
+    const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 0.4,
-          duration: 1000,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 1000,
-          useNativeDriver: true,
-        }),
+        Animated.timing(pulseAnim, { toValue: 0.3, duration: 900, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1,   duration: 900, useNativeDriver: true }),
       ]),
     );
-    pulse.start();
-    return () => pulse.stop();
+    loop.start();
+    return () => loop.stop();
   }, []);
 
-  // Cooldown timer — tick every second
   useEffect(() => {
-    const interval = setInterval(() => setCooldownTick((t) => t + 1), 1000);
-    return () => clearInterval(interval);
+    const t = setInterval(() => setCooldownTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
   }, []);
 
-  // Auto-refresh every 30s
   useEffect(() => {
-    const interval = setInterval(() => fetchData(), 30000);
-    return () => clearInterval(interval);
+    const t = setInterval(fetchAll, 30000);
+    return () => clearInterval(t);
   }, []);
 
-  async function fetchData() {
+  async function fetchAll() {
     try {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return;
-      const res = await fetch(`${API_URL}/api/friends/live`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setFriends(data.friends ?? []);
-        setMe(data.me ?? null);
+      const headers = { Authorization: `Bearer ${token}` };
+      const [liveRes, wallRes] = await Promise.all([
+        fetch(`${API_URL}/api/friends/live`, { headers }),
+        fetch(`${API_URL}/api/wall-of-shame`, { headers }),
+      ]);
+      if (liveRes.ok) {
+        const d = await liveRes.json();
+        setFriends(d.friends ?? []);
+        setMe(d.me ?? null);
+      }
+      if (wallRes.ok) {
+        setWall(await wallRes.json());
       }
     } finally {
       setLoading(false);
@@ -174,7 +194,7 @@ export default function HomeScreen() {
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
-      if (user) fetchData();
+      if (user) fetchAll();
       else setLoading(false);
     });
     return unsub;
@@ -182,58 +202,43 @@ export default function HomeScreen() {
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    fetchData();
+    fetchAll();
   }, []);
 
-  async function handleShame(friendId: string, type: string, reaction?: string) {
-    setShamingFriend(friendId);
-    setShowReactions(null);
+  async function handleShame(friendId: string, reaction?: string) {
+    setShamingId(friendId);
+    setReactionsFor(null);
     try {
       const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-      const res = await fetch(
-        `${API_URL}/api/shame?toUserId=${friendId}`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ type, reaction }),
-        },
-      );
+      const res = await fetch(`${API_URL}/api/shame?toUserId=${friendId}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "quick", reaction: reaction ?? "eyes" }),
+      });
       const data = await res.json();
-      if (data.status === "cooldown") {
-        Alert.alert("Cooldown", data.message);
-      }
-      fetchData(); // Refresh to update cooldown status
+      if (data.status === "cooldown") Alert.alert("Cooldown", data.message);
+      else fetchAll();
     } catch {
       Alert.alert("Error", "Failed to send shame");
     } finally {
-      setShamingFriend(null);
+      setShamingId(null);
     }
   }
 
   async function handleSOS() {
-    Alert.alert(
-      "SOS — Rescue Me",
-      "This will notify all friends and lock you out for 15 minutes. Are you sure?",
+    Alert.alert("SOS — Rescue Me",
+      "Notifies all friends and locks you out for 15 minutes.",
       [
         { text: "Cancel", style: "cancel" },
-        {
-          text: "Send SOS",
-          style: "destructive",
-          onPress: async () => {
-            const token = await auth.currentUser?.getIdToken();
-            if (!token) return;
-            await fetch(`${API_URL}/api/sos`, {
-              method: "POST",
-              headers: { Authorization: `Bearer ${token}` },
-            });
-            Alert.alert("SOS Sent", "Your friends have been notified. You're locked out for 15 minutes.");
-            fetchData();
-          },
-        },
+        { text: "Send SOS", style: "destructive", onPress: async () => {
+          const token = await auth.currentUser?.getIdToken();
+          await fetch(`${API_URL}/api/sos`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          Alert.alert("SOS Sent", "Your friends have been notified. Locked out 15 min.");
+          fetchAll();
+        }},
       ],
     );
   }
@@ -246,279 +251,305 @@ export default function HomeScreen() {
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
       refreshControl={
-        <RefreshControl
-          refreshing={refreshing}
-          onRefresh={onRefresh}
-          tintColor={colors.accentPrimary}
-        />
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accentPrimary} />
       }
     >
       <StatusBar style="light" />
 
-      {/* Header */}
-      <View style={styles.headerRow}>
+      {/* ── Header ── */}
+      <View style={styles.header}>
         <View>
-          <Text style={styles.dateLabel}>{formatDate()}</Text>
+          <Text style={styles.headerTitle}>Live</Text>
           {liveCount > 0 && (
             <View style={styles.liveRow}>
-              <Animated.View style={[styles.liveDot, { opacity: pulseAnim }] as any} />
-              <Text style={styles.liveText}>
-                {liveCount} scrolling now
-              </Text>
+              <Animated.View style={[styles.livePulse, { opacity: pulseAnim }] as any} />
+              <Text style={styles.liveCount}>{liveCount} scrolling now</Text>
             </View>
           )}
         </View>
-        <TouchableOpacity style={styles.sosButton} onPress={handleSOS}>
-          <Text style={styles.sosText}>SOS</Text>
+        <TouchableOpacity style={styles.sosBtn} onPress={handleSOS}>
+          <Text style={styles.sosTxt}>SOS</Text>
         </TouchableOpacity>
       </View>
 
+      {/* ── Friend Scroll ── */}
       {loading ? (
-        <View style={styles.loadingCard}>
+        <View style={styles.loadingWrap}>
           <ActivityIndicator color={colors.accentPrimary} />
         </View>
       ) : friends.length === 0 ? (
         <View style={styles.emptyCard}>
-          <Ionicons name="people-outline" size={40} color={colors.textTertiary} />
+          <Ionicons name="people-outline" size={36} color={colors.textTertiary} />
           <Text style={styles.emptyTitle}>No friends yet</Text>
-          <Text style={styles.emptySubtext}>
-            Join a group in the Friends tab to see your friends' live activity
-          </Text>
+          <Text style={styles.emptyBody}>Join a group in the Friends tab</Text>
         </View>
       ) : (
-        <>
-          {/* Friend cards */}
-          {friends.map((friend) => (
-            <FriendCard
-              key={friend.userId}
-              friend={friend}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.friendScroll}
+        >
+          {friends.map((f) => (
+            <FriendPill
+              key={f.userId}
+              friend={f}
               pulseAnim={pulseAnim}
-              shamingFriend={shamingFriend}
-              showReactions={showReactions}
-              setShowReactions={setShowReactions}
+              shamingId={shamingId}
+              reactionsFor={reactionsFor}
+              setReactionsFor={setReactionsFor}
               onShame={handleShame}
               cooldownTick={cooldownTick}
             />
           ))}
-        </>
+        </ScrollView>
       )}
 
-      {/* Wall of Shame link */}
-      <TouchableOpacity
-        style={styles.wallLink}
-        onPress={() => navigation.navigate("Stats", { screen: "WallOfShame" })}
-        activeOpacity={0.75}
-      >
-        <Text style={styles.wallLinkLabel}>🏛️ Wall of Shame</Text>
-        <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
-      </TouchableOpacity>
+      {/* ── Personal Insight ── */}
+      {me && <InsightCard me={me} />}
 
-      {/* My status card */}
-      {me && (
-        <>
-          <View style={styles.youDivider}>
-            <View style={styles.youDividerLine} />
-            <Text style={styles.youDividerText}>YOU</Text>
-            <View style={styles.youDividerLine} />
-          </View>
-          <View style={styles.myCard}>
-            {me.currentApp ? (
-              <View style={styles.myLiveRow}>
-                <View style={[styles.statusDot, styles.dotLive]} />
-                <Text style={styles.myAppText}>
-                  {me.currentApp} · {me.sessionMinutes}m
-                </Text>
-              </View>
-            ) : null}
-            <View style={styles.myStatsRow}>
-              <View style={styles.myStat}>
-                <Text style={styles.myStatNumber}>
-                  {formatDuration(me.totalTodaySeconds)}
-                </Text>
-                <Text style={styles.myStatLabel}>today</Text>
-              </View>
-              <View style={styles.myStatDivider} />
-              <View style={styles.myStat}>
-                <Text style={styles.myStatNumber}>{me.dailyLimitPct}%</Text>
-                <Text style={styles.myStatLabel}>of limit</Text>
-              </View>
-              <View style={styles.myStatDivider} />
-              <View style={styles.myStat}>
-                <Text style={styles.myStatNumber}>{me.totalOpens}</Text>
-                <Text style={styles.myStatLabel}>opens</Text>
-              </View>
-            </View>
-            <View style={styles.limitBar}>
-              <View
-                style={[
-                  styles.limitBarFill,
-                  {
-                    width: `${Math.min(100, me.dailyLimitPct)}%` as any,
-                    backgroundColor:
-                      me.dailyLimitPct > 80
-                        ? colors.destructive
-                        : me.dailyLimitPct > 50
-                          ? colors.warning
-                          : colors.success,
-                  },
-                ]}
-              />
-            </View>
-          </View>
-        </>
+      {/* ── Accountability Feed ── */}
+      <View style={styles.feedHeader}>
+        <Text style={styles.feedTitle}>Accountability Feed</Text>
+        <TouchableOpacity
+          onPress={() => navigation.navigate("Stats", { screen: "WallOfShame" })}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Text style={styles.feedSeeAll}>See all</Text>
+        </TouchableOpacity>
+      </View>
+
+      {wall.length === 0 ? (
+        <View style={styles.feedEmpty}>
+          <Text style={styles.feedEmptyText}>The feed is clean — keep it that way.</Text>
+        </View>
+      ) : (
+        wall.slice(0, 12).map((entry, i) => (
+          <FeedEntry key={entry.id || i} entry={entry} />
+        ))
       )}
     </ScrollView>
   );
 }
 
-// ── Friend Card Component ────────────────────────────────────────────
+// ── Friend Pill ──────────────────────────────────────────────────────────────
 
-function FriendCard({
+function FriendPill({
   friend,
   pulseAnim,
-  shamingFriend,
-  showReactions,
-  setShowReactions,
+  shamingId,
+  reactionsFor,
+  setReactionsFor,
   onShame,
   cooldownTick,
 }: {
   friend: FriendData;
   pulseAnim: Animated.Value;
-  shamingFriend: string | null;
-  showReactions: string | null;
-  setShowReactions: (id: string | null) => void;
-  onShame: (friendId: string, type: string, reaction?: string) => void;
+  shamingId: string | null;
+  reactionsFor: string | null;
+  setReactionsFor: (id: string | null) => void;
+  onShame: (id: string, reaction?: string) => void;
   cooldownTick: number;
 }) {
-  const isLive = friend.status === "live";
-  const isRecent = friend.status === "recent";
-  const isGhost = friend.isGhost;
-  const isShaming = shamingFriend === friend.userId;
-  const reactionsVisible = showReactions === friend.userId;
+  const isLive    = friend.status === "live";
+  const isRecent  = friend.status === "recent";
+  const isShaming = shamingId === friend.userId;
+  const showReact = reactionsFor === friend.userId;
+
+  // Shame eligibility: live + 5+ continuous minutes + not on cooldown
+  const shameReady = isLive && (friend.sessionMinutes ?? 0) >= 5 && !!friend.canShame;
+  const onCooldown = isLive && !friend.canShame && !!friend.shameCooldownUntil;
+  const warming    = isLive && (friend.sessionMinutes ?? 0) < 5;
+
+  function cooldownLabel(): string {
+    if (!friend.shameCooldownUntil) return "";
+    const rem = Math.max(0, new Date(friend.shameCooldownUntil).getTime() - Date.now());
+    const m = Math.floor(rem / 60000);
+    const s = Math.floor((rem % 60000) / 1000);
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
 
   return (
-    <View style={[styles.friendCard, isLive && styles.friendCardLive]}>
-      {/* Status dot + name */}
-      <View style={styles.friendHeader}>
-        <View style={styles.friendNameRow}>
-          {isLive ? (
-            <Animated.View
-              style={[styles.statusDot, styles.dotLive, { opacity: pulseAnim }] as any}
-            />
-          ) : isRecent ? (
-            <View style={[styles.statusDot, styles.dotRecent]} />
-          ) : isGhost ? (
-            <View style={[styles.statusDot, styles.dotGhost]} />
-          ) : (
-            <View style={[styles.statusDot, styles.dotOffline]} />
-          )}
-          <Text style={styles.friendName}>{friend.displayName}</Text>
-          {friend.streakDays ? (
-            <Text style={styles.streakBadge}>
-              🔥 {friend.streakDays}d
-            </Text>
-          ) : null}
-        </View>
-
-        {/* Shame button or cooldown */}
-        {isLive && friend.canShame ? (
-          <TouchableOpacity
-            style={styles.shameButton}
-            onPress={() => onShame(friend.userId, "quick", "eyes")}
-            onLongPress={() =>
-              setShowReactions(reactionsVisible ? null : friend.userId)
-            }
-            disabled={isShaming}
-          >
-            {isShaming ? (
-              <ActivityIndicator size="small" color={colors.textPrimary} />
-            ) : (
-              <Text style={styles.shameButtonText}>SHAME 🔥</Text>
-            )}
-          </TouchableOpacity>
-        ) : isLive && !friend.canShame && friend.shameCooldownUntil ? (
-          <View style={styles.cooldownBadge}>
-            <Text style={styles.cooldownText}>
-              ⏳ {formatCooldown(friend.shameCooldownUntil)}
-            </Text>
-          </View>
-        ) : !isLive && friend.status === "offline" ? (
-          <View style={styles.cleanBadge}>
-            <Text style={styles.cleanText}>Clean</Text>
-          </View>
-        ) : null}
+    <View style={[styles.pill, isLive && styles.pillLive]}>
+      {/* Status line */}
+      <View style={styles.pillStatusRow}>
+        {isLive ? (
+          <Animated.View style={[styles.pillDot, styles.dotGreen, { opacity: pulseAnim }] as any} />
+        ) : isRecent ? (
+          <View style={[styles.pillDot, styles.dotOrange]} />
+        ) : (
+          <View style={[styles.pillDot, styles.dotGrey]} />
+        )}
+        <Text style={styles.pillStatus} numberOfLines={1}>
+          {isLive
+            ? "LIVE"
+            : isRecent
+              ? friend.lastSeenMinsAgo != null
+                ? `${friend.lastSeenMinsAgo}m ago`
+                : "Active today"
+              : friend.isGhost
+                ? "👻 ghost"
+                : "Offline"}
+        </Text>
       </View>
 
-      {/* Quick reactions popover */}
-      {reactionsVisible && (
-        <View style={styles.reactionsRow}>
-          {QUICK_REACTIONS.map((r) => (
-            <TouchableOpacity
-              key={r.emoji}
-              style={[
-                styles.reactionButton,
-                r.emoji === "emergency" && styles.reactionEmergency,
-              ]}
-              onPress={() => onShame(friend.userId, "quick", r.emoji)}
-            >
-              <Text style={styles.reactionIcon}>{r.icon}</Text>
-              <Text style={styles.reactionLabel}>{r.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
+      {/* Name */}
+      <Text style={styles.pillName} numberOfLines={1}>{friend.displayName}</Text>
 
-      {/* Session info */}
+      {/* Sub-info */}
       {isLive && friend.currentApp ? (
-        <View style={styles.sessionRow}>
-          <Text style={styles.sessionApp}>{friend.currentApp}</Text>
-          <Text style={styles.sessionDot}> · </Text>
-          <Text style={styles.sessionTime}>{friend.sessionMinutes}m</Text>
-        </View>
-      ) : isGhost ? (
-        <Text style={styles.ghostText}>👻 Ghost mode</Text>
-      ) : friend.status === "offline" ? (
-        <Text style={styles.offlineText}>
-          {(friend.totalTodaySeconds ?? 0) > 0
-            ? `${formatDuration(friend.totalTodaySeconds ?? 0)} today`
-            : "No activity today"}
+        <Text style={styles.pillSub} numberOfLines={1}>
+          {friend.currentApp} · {friend.sessionMinutes}m
         </Text>
-      ) : null}
-
-      {/* Daily limit bar */}
-      {friend.dailyLimitPct !== undefined && friend.dailyLimitPct > 0 && (
-        <View style={styles.friendLimitRow}>
-          <View style={styles.friendLimitBar}>
-            <View
-              style={[
-                styles.friendLimitFill,
-                {
-                  width: `${Math.min(100, friend.dailyLimitPct)}%` as any,
-                  backgroundColor:
-                    friend.dailyLimitPct > 80
-                      ? colors.destructive
-                      : friend.dailyLimitPct > 50
-                        ? colors.warning
-                        : colors.accentMuted,
-                },
-              ]}
-            />
-          </View>
-          <Text style={styles.friendLimitText}>{friend.dailyLimitPct}%</Text>
-        </View>
+      ) : (friend.totalTodaySeconds ?? 0) > 0 ? (
+        <Text style={styles.pillSub}>{fmt(friend.totalTodaySeconds ?? 0)} today</Text>
+      ) : (
+        <Text style={styles.pillSub}>No activity</Text>
       )}
 
-      {/* Opens count */}
-      {(friend.totalOpens ?? 0) > 0 && (
-        <Text style={styles.opensText}>
-          {friend.totalOpens} opens today
+      {/* Streak */}
+      {(friend.streakDays ?? 0) > 0 && (
+        <Text style={styles.pillStreak}>🔥 {friend.streakDays}d</Text>
+      )}
+
+      {/* Shame controls — only for live friends */}
+      {isLive && (
+        <View style={styles.pillShameWrap}>
+          {onCooldown ? (
+            <View style={styles.pillCooldown}>
+              <Text style={styles.pillCooldownTxt}>⏳ {cooldownLabel()}</Text>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={[styles.pillShameBtn, !shameReady && styles.pillShameBtnDim]}
+              disabled={!shameReady || isShaming}
+              onPress={() => setReactionsFor(showReact ? null : friend.userId)}
+              activeOpacity={0.8}
+            >
+              {isShaming ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : warming ? (
+                <Text style={styles.pillShameTxt}>
+                  {friend.sessionMinutes}m / 5m
+                </Text>
+              ) : (
+                <Text style={styles.pillShameTxt}>SHAME 🔥</Text>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {showReact && (
+            <View style={styles.reactionPopup}>
+              {REACTIONS.map((r) => (
+                <TouchableOpacity
+                  key={r.emoji}
+                  style={[styles.reactionBtn, r.emoji === "emergency" && styles.reactionEmergency]}
+                  onPress={() => onShame(friend.userId, r.emoji)}
+                >
+                  <Text style={styles.reactionIcon}>{r.icon}</Text>
+                  <Text style={styles.reactionLabel}>{r.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ── Insight Card ─────────────────────────────────────────────────────────────
+
+function InsightCard({ me }: { me: MeData }) {
+  const pct = pctChange(me.totalTodaySeconds, me.yesterdaySeconds);
+  const opensPct = pctChange(me.totalOpens, me.yesterdayOpens);
+
+  const barPct = Math.min(me.dailyLimitPct, 100);
+  const barColor =
+    me.dailyLimitPct >= 100 ? colors.destructive :
+    me.dailyLimitPct >= 75  ? colors.warning :
+    colors.success;
+
+  return (
+    <View style={styles.insight}>
+      <Text style={styles.insightLabel}>Today</Text>
+
+      <View style={styles.insightRow}>
+        {/* Total time */}
+        <View style={styles.insightStat}>
+          <Text style={styles.insightNum}>{fmt(me.totalTodaySeconds)}</Text>
+          <Text style={styles.insightMeta}>screen time</Text>
+          {pct !== null && (
+            <Text style={[styles.insightDelta, { color: pct > 0 ? colors.destructive : colors.success }]}>
+              {pct > 0 ? "+" : ""}{pct}% vs yesterday
+            </Text>
+          )}
+        </View>
+
+        <View style={styles.insightDivider} />
+
+        {/* Pickups */}
+        <View style={styles.insightStat}>
+          <Text style={styles.insightNum}>{me.totalOpens}</Text>
+          <Text style={styles.insightMeta}>pickups</Text>
+          {opensPct !== null && (
+            <Text style={[styles.insightDelta, { color: opensPct > 0 ? colors.destructive : colors.success }]}>
+              {opensPct > 0 ? "+" : ""}{opensPct}% vs yesterday
+            </Text>
+          )}
+        </View>
+
+        <View style={styles.insightDivider} />
+
+        {/* Limit */}
+        <View style={styles.insightStat}>
+          <Text style={[styles.insightNum, { color: barColor }]}>{me.dailyLimitPct}%</Text>
+          <Text style={styles.insightMeta}>of limit</Text>
+        </View>
+      </View>
+
+      {/* Limit bar */}
+      <View style={styles.insightBarTrack}>
+        <View style={[styles.insightBar, { width: `${barPct}%` as any, backgroundColor: barColor }]} />
+      </View>
+
+      {me.currentApp && (
+        <Text style={styles.insightLive}>
+          Currently: {me.currentApp} · {me.sessionMinutes}m
         </Text>
       )}
     </View>
   );
 }
 
-// ── Styles ───────────────────────────────────────────────────────────
+// ── Feed Entry ───────────────────────────────────────────────────────────────
+
+function FeedEntry({ entry }: { entry: WallEntry }) {
+  const initials = entry.displayName
+    .split(" ")
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+
+  return (
+    <View style={styles.feedCard}>
+      <View style={styles.feedAvatar}>
+        <Text style={styles.feedAvatarTxt}>{initials}</Text>
+      </View>
+      <View style={styles.feedBody}>
+        <View style={styles.feedTopRow}>
+          <Text style={styles.feedName}>{entry.displayName}</Text>
+          <Text style={styles.feedTime}>{relTime(entry.createdAt)}</Text>
+        </View>
+        <Text style={styles.feedDesc}>
+          {shameEmoji(entry.type)} {shameDesc(entry)}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+// ── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
@@ -529,329 +560,329 @@ const styles = StyleSheet.create({
   },
 
   // Header
-  headerRow: {
+  header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    marginBottom: spacing.lg,
+    marginBottom: spacing.md,
   },
-  dateLabel: {
-    fontSize: fontSize.small,
-    color: colors.textSecondary,
-    marginBottom: spacing.xs,
+  headerTitle: {
+    fontSize: fontSize.page,
+    fontWeight: "800",
+    color: colors.textPrimary,
+    letterSpacing: -1,
   },
   liveRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 5,
+    marginTop: 2,
   },
-  liveDot: {
-    width: 8,
-    height: 8,
+  livePulse: {
+    width: 7,
+    height: 7,
     borderRadius: 4,
-    backgroundColor: colors.destructive,
+    backgroundColor: colors.success,
   },
-  liveText: {
-    fontSize: fontSize.body,
+  liveCount: {
+    fontSize: fontSize.small,
     fontWeight: "600",
-    color: colors.destructive,
+    color: colors.success,
   },
-  sosButton: {
-    backgroundColor: colors.destructive + "22",
+  sosBtn: {
+    backgroundColor: `${colors.destructive}22`,
     borderRadius: 8,
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderWidth: 1,
-    borderColor: colors.destructive + "44",
+    borderColor: `${colors.destructive}44`,
   },
-  sosText: {
+  sosTxt: {
     fontSize: fontSize.body,
     fontWeight: "700",
     color: colors.destructive,
   },
 
-  // Loading / Empty
-  loadingCard: {
-    backgroundColor: colors.surface1,
-    borderRadius: 12,
-    padding: spacing.xl,
+  // Loading / empty
+  loadingWrap: {
+    paddingVertical: spacing.xl,
     alignItems: "center",
   },
   emptyCard: {
     backgroundColor: colors.surface1,
-    borderRadius: 12,
+    borderRadius: 14,
     padding: spacing.xl,
     alignItems: "center",
     gap: spacing.sm,
+    marginBottom: spacing.lg,
   },
   emptyTitle: {
     fontSize: fontSize.title,
     fontWeight: "600",
     color: colors.textPrimary,
   },
-  emptySubtext: {
+  emptyBody: {
     fontSize: fontSize.body,
     color: colors.textTertiary,
     textAlign: "center",
-    lineHeight: 20,
   },
 
-  // Friend card
-  friendCard: {
+  // Friend horizontal scroll
+  friendScroll: {
+    paddingRight: spacing.md,
+    paddingBottom: spacing.md,
+    gap: spacing.sm,
+  },
+
+  // Friend pill
+  pill: {
+    width: 145,
     backgroundColor: colors.surface1,
-    borderRadius: 12,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
+    borderRadius: 14,
+    padding: 12,
+    gap: 4,
   },
-  friendCardLive: {
+  pillLive: {
     borderWidth: 1,
-    borderColor: colors.destructive + "44",
+    borderColor: `${colors.success}50`,
   },
-  friendHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  friendNameRow: {
+  pillStatusRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    flex: 1,
+    gap: 5,
+    marginBottom: 2,
   },
-  statusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+  pillDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
   },
-  dotLive: { backgroundColor: "#34C759" },
-  dotRecent: { backgroundColor: "#FF9500" },
-  dotOffline: { backgroundColor: "#636366" },
-  dotGhost: { backgroundColor: "#8E8E93" },
-  friendName: {
-    fontSize: fontSize.title,
-    fontWeight: "600",
+  dotGreen:  { backgroundColor: colors.success },
+  dotOrange: { backgroundColor: colors.warning },
+  dotGrey:   { backgroundColor: colors.textTertiary },
+  pillStatus: {
+    fontSize: fontSize.tiny,
+    fontWeight: "700",
+    color: colors.textTertiary,
+    letterSpacing: 0.3,
+  },
+  pillName: {
+    fontSize: fontSize.body,
+    fontWeight: "700",
     color: colors.textPrimary,
   },
-  streakBadge: {
-    fontSize: fontSize.small,
+  pillSub: {
+    fontSize: fontSize.tiny,
+    color: colors.textSecondary,
+  },
+  pillStreak: {
+    fontSize: fontSize.tiny,
     color: colors.warning,
-    fontWeight: "500",
+    fontWeight: "600",
   },
-
-  // Shame button
-  shameButton: {
+  pillShameWrap: {
+    marginTop: 6,
+  },
+  pillShameBtn: {
     backgroundColor: colors.destructive,
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
+    borderRadius: 7,
+    paddingVertical: 6,
+    alignItems: "center",
   },
-  shameButtonText: {
-    fontSize: fontSize.small,
+  pillShameBtnDim: {
+    backgroundColor: colors.surface2,
+  },
+  pillShameTxt: {
+    fontSize: fontSize.tiny,
     fontWeight: "700",
     color: "#fff",
   },
-  cooldownBadge: {
+  pillCooldown: {
     backgroundColor: colors.surface2,
-    borderRadius: 8,
-    paddingHorizontal: 10,
+    borderRadius: 7,
     paddingVertical: 6,
+    alignItems: "center",
   },
-  cooldownText: {
-    fontSize: fontSize.small,
+  pillCooldownTxt: {
+    fontSize: fontSize.tiny,
     color: colors.textTertiary,
-    fontWeight: "500",
-  },
-  cleanBadge: {
-    backgroundColor: colors.success + "22",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  cleanText: {
-    fontSize: fontSize.small,
-    color: colors.success,
     fontWeight: "600",
   },
-
-  // Quick reactions
-  reactionsRow: {
-    flexDirection: "row",
-    gap: spacing.sm,
-    marginTop: spacing.sm,
-    paddingTop: spacing.sm,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-  },
-  reactionButton: {
-    flex: 1,
-    backgroundColor: colors.surface2,
-    borderRadius: 8,
-    paddingVertical: 8,
-    alignItems: "center",
-    gap: 2,
-  },
-  reactionEmergency: {
-    backgroundColor: colors.destructive + "22",
-    borderWidth: 1,
-    borderColor: colors.destructive + "44",
-  },
-  reactionIcon: { fontSize: 18 },
-  reactionLabel: {
-    fontSize: 9,
-    color: colors.textTertiary,
-    fontWeight: "500",
-  },
-
-  // Session info
-  sessionRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 8,
-  },
-  sessionApp: {
-    fontSize: fontSize.body,
-    color: colors.textPrimary,
-    fontWeight: "500",
-  },
-  sessionDot: {
-    fontSize: fontSize.body,
-    color: colors.textTertiary,
-  },
-  sessionTime: {
-    fontSize: fontSize.body,
-    color: colors.textSecondary,
-  },
-  ghostText: {
-    fontSize: fontSize.body,
-    color: colors.neutral,
-    marginTop: 6,
-  },
-  offlineText: {
-    fontSize: fontSize.body,
-    color: colors.textTertiary,
-    marginTop: 6,
-  },
-
-  // Daily limit bar
-  friendLimitRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginTop: 10,
-  },
-  friendLimitBar: {
-    flex: 1,
-    height: 4,
-    backgroundColor: colors.surface2,
-    borderRadius: 2,
-    overflow: "hidden",
-  },
-  friendLimitFill: {
-    height: "100%",
-    borderRadius: 2,
-  },
-  friendLimitText: {
-    fontSize: fontSize.tiny,
-    color: colors.textTertiary,
-    fontWeight: "500",
-    width: 30,
-    textAlign: "right",
-  },
-
-  opensText: {
-    fontSize: fontSize.tiny,
-    color: colors.textTertiary,
-    marginTop: 4,
-  },
-
-  // Wall of Shame link
-  wallLink: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+  reactionPopup: {
+    position: "absolute",
+    bottom: "110%",
+    left: -8,
+    right: -8,
     backgroundColor: colors.surface1,
     borderRadius: 10,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 12,
-    marginBottom: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 6,
+    gap: 4,
+    zIndex: 999,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 8,
   },
-  wallLinkLabel: {
-    fontSize: fontSize.body,
-    fontWeight: "600",
-    color: colors.textSecondary,
-  },
-
-  // You divider
-  youDivider: {
+  reactionBtn: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: spacing.md,
-    marginBottom: spacing.sm,
-    gap: spacing.sm,
+    gap: 6,
+    paddingVertical: 5,
+    paddingHorizontal: 6,
+    borderRadius: 6,
   },
-  youDividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: colors.border,
+  reactionEmergency: {
+    backgroundColor: `${colors.destructive}22`,
   },
-  youDividerText: {
+  reactionIcon: { fontSize: 14 },
+  reactionLabel: {
+    fontSize: fontSize.tiny,
+    color: colors.textSecondary,
+    fontWeight: "500",
+  },
+
+  // Insight card
+  insight: {
+    backgroundColor: colors.surface1,
+    borderRadius: 14,
+    padding: spacing.md,
+    marginTop: spacing.sm,
+    marginBottom: spacing.lg,
+  },
+  insightLabel: {
     fontSize: fontSize.small,
     fontWeight: "600",
     color: colors.textTertiary,
-    letterSpacing: 1,
-  },
-
-  // My card
-  myCard: {
-    backgroundColor: colors.surface1,
-    borderRadius: 12,
-    padding: spacing.md,
-    borderWidth: 1,
-    borderColor: colors.accentPrimary + "33",
-  },
-  myLiveRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
     marginBottom: spacing.sm,
   },
-  myAppText: {
-    fontSize: fontSize.body,
-    fontWeight: "500",
-    color: colors.accentPrimary,
-  },
-  myStatsRow: {
+  insightRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
+    marginBottom: spacing.sm,
   },
-  myStat: {
+  insightStat: {
     flex: 1,
     alignItems: "center",
   },
-  myStatDivider: {
-    width: 1,
-    height: 28,
-    backgroundColor: colors.border,
-  },
-  myStatNumber: {
+  insightNum: {
     fontSize: fontSize.numericSmall,
-    fontWeight: "700",
+    fontWeight: "800",
     color: colors.textPrimary,
+    letterSpacing: -0.5,
   },
-  myStatLabel: {
+  insightMeta: {
     fontSize: fontSize.tiny,
     color: colors.textTertiary,
     marginTop: 2,
   },
-  limitBar: {
+  insightDelta: {
+    fontSize: 10,
+    fontWeight: "600",
+    marginTop: 2,
+  },
+  insightDivider: {
+    width: 1,
+    height: 40,
+    backgroundColor: colors.border,
+  },
+  insightBarTrack: {
     height: 4,
     backgroundColor: colors.surface2,
     borderRadius: 2,
     overflow: "hidden",
-    marginTop: spacing.sm,
+    marginTop: spacing.xs,
   },
-  limitBarFill: {
+  insightBar: {
     height: "100%",
     borderRadius: 2,
+  },
+  insightLive: {
+    fontSize: fontSize.tiny,
+    color: colors.accentPrimary,
+    marginTop: 8,
+    fontWeight: "500",
+  },
+
+  // Feed
+  feedHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: spacing.sm,
+  },
+  feedTitle: {
+    fontSize: fontSize.title,
+    fontWeight: "700",
+    color: colors.textPrimary,
+    letterSpacing: -0.3,
+  },
+  feedSeeAll: {
+    fontSize: fontSize.small,
+    color: colors.accentPrimary,
+    fontWeight: "600",
+  },
+  feedEmpty: {
+    backgroundColor: colors.surface1,
+    borderRadius: 12,
+    padding: spacing.lg,
+    alignItems: "center",
+  },
+  feedEmptyText: {
+    fontSize: fontSize.body,
+    color: colors.textTertiary,
+    fontStyle: "italic",
+  },
+  feedCard: {
+    backgroundColor: colors.surface1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: spacing.sm,
+    flexDirection: "row",
+    gap: 10,
+    alignItems: "flex-start",
+  },
+  feedAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: `${colors.accentPrimary}30`,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  feedAvatarTxt: {
+    fontSize: fontSize.small,
+    fontWeight: "700",
+    color: colors.accentPrimary,
+  },
+  feedBody: {
+    flex: 1,
+  },
+  feedTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 3,
+  },
+  feedName: {
+    fontSize: fontSize.body,
+    fontWeight: "700",
+    color: colors.textPrimary,
+    flexShrink: 1,
+  },
+  feedTime: {
+    fontSize: fontSize.tiny,
+    color: colors.textTertiary,
+    marginLeft: 8,
+  },
+  feedDesc: {
+    fontSize: fontSize.small,
+    color: colors.textSecondary,
+    lineHeight: 18,
   },
 });

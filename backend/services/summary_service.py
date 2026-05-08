@@ -1,3 +1,4 @@
+from datetime import datetime, timezone, timedelta
 from firestore_client import db
 
 
@@ -12,6 +13,13 @@ def update_daily_summary(uid: str, app_name: str, open_time: str, duration_secon
         .document(date_str)
     )
 
+    # Approximate close time = open + duration
+    try:
+        close_dt = datetime.fromisoformat(open_time.replace("Z", "+00:00")) + timedelta(seconds=duration_seconds)
+        last_seen_at = close_dt.isoformat()
+    except Exception:
+        last_seen_at = datetime.now(timezone.utc).isoformat()
+
     doc = ref.get()
     if doc.exists:
         data = doc.to_dict()
@@ -24,6 +32,7 @@ def update_daily_summary(uid: str, app_name: str, open_time: str, duration_secon
                 "sessionCount": data.get("sessionCount", 0) + 1,
                 "byApp": by_app,
                 "maxSessionSeconds": max(data.get("maxSessionSeconds", 0), duration_seconds),
+                "lastSeenAt": last_seen_at,
             }
         )
     else:
@@ -35,6 +44,7 @@ def update_daily_summary(uid: str, app_name: str, open_time: str, duration_secon
                 "sessionCount": 1,
                 "byApp": {app_name: duration_seconds},
                 "maxSessionSeconds": duration_seconds,
+                "lastSeenAt": last_seen_at,
             }
         )
     return new_total

@@ -660,6 +660,7 @@ def get_live_friends(uid: str = Depends(get_uid)):
         current_app = None
         session_start = None
         session_minutes = 0
+        last_seen_mins_ago = None
 
         if active_docs:
             latest = max(active_docs, key=lambda d: d.to_dict().get("openTime", ""))
@@ -670,10 +671,16 @@ def get_live_friends(uid: str = Depends(get_uid)):
             session_minutes = int((now - open_dt).total_seconds() / 60)
             status = "live"
         else:
-            # Check if scrolled recently (last 30 min) from today's summary
             total_today = today_stats.get("totalSeconds", 0)
             if total_today > 0:
                 status = "recent"
+                last_seen_raw = today_stats.get("lastSeenAt")
+                if last_seen_raw:
+                    try:
+                        last_seen_dt = _parse_time(last_seen_raw)
+                        last_seen_mins_ago = max(0, int((now - last_seen_dt).total_seconds() / 60))
+                    except Exception:
+                        pass
 
         # Daily limit info
         daily_cap = friend_settings.get("dailyCapSeconds", 3600)
@@ -689,6 +696,7 @@ def get_live_friends(uid: str = Depends(get_uid)):
             "currentApp": current_app,
             "sessionStart": session_start,
             "sessionMinutes": session_minutes,
+            "lastSeenMinsAgo": last_seen_mins_ago,
             "totalTodaySeconds": total_today_secs,
             "dailyLimitPct": daily_pct,
             "totalOpens": total_opens,
@@ -729,6 +737,13 @@ def get_live_friends(uid: str = Depends(get_uid)):
         my_current_app = sd.get("appName")
         my_session_minutes = int((now - _parse_time(sd.get("openTime", ""))).total_seconds() / 60)
 
+    yesterday_str = (now.date() - timedelta(days=1)).isoformat()
+    my_yesterday_doc = (
+        db.collection("users").document(uid)
+        .collection("dailySummaries").document(yesterday_str).get()
+    )
+    my_yesterday = my_yesterday_doc.to_dict() if my_yesterday_doc.exists else {}
+
     me = {
         "userId": uid,
         "totalTodaySeconds": my_total,
@@ -736,6 +751,8 @@ def get_live_friends(uid: str = Depends(get_uid)):
         "totalOpens": sum(my_stats.get("openCounts", {}).values()),
         "currentApp": my_current_app,
         "sessionMinutes": my_session_minutes,
+        "yesterdaySeconds": my_yesterday.get("totalSeconds", 0),
+        "yesterdayOpens": sum(my_yesterday.get("openCounts", {}).values()),
     }
 
     return {"friends": friends, "me": me}
