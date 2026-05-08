@@ -163,22 +163,56 @@ async def get_leaderboard(
             by_app = {}
             session_count = 0
 
-        leaderboard.append(
-            {
-                "userId": member_id,
-                "displayName": display_name,
-                "totalSeconds": total_seconds,
-                "sessionCount": session_count,
-                "byApp": by_app,
-            }
+        # Streak
+        streak_doc = (
+            db.collection("users").document(member_id)
+            .collection("streaks").document("current").get()
         )
+        streak_days = streak_doc.to_dict().get("current", 0) if streak_doc.exists else 0
+
+        # Live status
+        active = list(
+            db.collection("activeSessions")
+            .where("userId", "==", member_id)
+            .limit(1)
+            .stream()
+        )
+        is_live = len(active) > 0
+
+        # Daily cap
+        settings_doc = (
+            db.collection("users").document(member_id)
+            .collection("notificationSettings").document("config").get()
+        )
+        daily_cap = (
+            settings_doc.to_dict().get("dailyCapSeconds", 3600)
+            if settings_doc.exists else 3600
+        )
+
+        leaderboard.append({
+            "userId": member_id,
+            "displayName": display_name,
+            "totalSeconds": total_seconds,
+            "sessionCount": session_count,
+            "byApp": by_app,
+            "streakDays": streak_days,
+            "isLive": is_live,
+            "dailyCapSeconds": daily_cap,
+        })
 
     # Rank by least screen time (ascending) — lower is better
     leaderboard.sort(key=lambda x: x["totalSeconds"])
     for i, entry in enumerate(leaderboard):
         entry["rank"] = i + 1
 
-    return {"date": target_date, "groupId": group_id, "leaderboard": leaderboard}
+    group_avg = int(sum(e["totalSeconds"] for e in leaderboard) / len(leaderboard)) if leaderboard else 0
+
+    return {
+        "date": target_date,
+        "groupId": group_id,
+        "groupAvgSeconds": group_avg,
+        "leaderboard": leaderboard,
+    }
 
 
 @router.get("")
