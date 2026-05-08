@@ -7,9 +7,11 @@ import {
   RefreshControl,
   ActivityIndicator,
   Dimensions,
+  TouchableOpacity,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { onAuthStateChanged } from "firebase/auth";
+import { useNavigation } from "@react-navigation/native";
 import { auth } from "../lib/firebase";
 import { colors, spacing, fontSize } from "../theme";
 
@@ -531,8 +533,31 @@ function generateInsights(
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
+type GroupStats = {
+  groupAvgPerDay: number;
+  leaderboard: {
+    userId: string;
+    displayName: string;
+    isYou: boolean;
+    totalSeconds: number;
+    avgPerDay: number;
+    byApp: Record<string, number>;
+    streakDays: number;
+    longestStreak: number;
+    shamesSent: number;
+    shamesReceived: number;
+    rank: number;
+  }[];
+  appStats: Record<string, {
+    groupAvg: number;
+    members: { userId: string; displayName: string; isYou: boolean; seconds: number }[];
+  }>;
+};
+
 export default function StatsScreen() {
+  const navigation = useNavigation<any>();
   const [summaries, setSummaries] = useState<Record<string, DailySummary>>({});
+  const [groupStats, setGroupStats] = useState<GroupStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -546,13 +571,23 @@ export default function StatsScreen() {
       start.setDate(today.getDate() - GRID_FETCH_DAYS);
 
       const url = `${API_URL}/api/usage/stats?start=${toDateString(start)}&end=${toDateString(today)}`;
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) return;
+      const [statsRes, groupRes] = await Promise.all([
+        fetch(url, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${API_URL}/api/stats/group?days=7`, { headers: { Authorization: `Bearer ${token}` } })
+          .catch(() => null),
+      ]);
 
-      const data: DailySummary[] = await res.json();
-      const map: Record<string, DailySummary> = {};
-      for (const entry of data) map[entry.date] = entry;
-      setSummaries(map);
+      if (statsRes.ok) {
+        const data: DailySummary[] = await statsRes.json();
+        const map: Record<string, DailySummary> = {};
+        for (const entry of data) map[entry.date] = entry;
+        setSummaries(map);
+      }
+
+      if (groupRes?.ok) {
+        const data = await groupRes.json();
+        setGroupStats(data);
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -660,6 +695,169 @@ export default function StatsScreen() {
       }
     >
       <Text style={styles.pageTitle}>Statistics</Text>
+
+      {/* ── GROUP LEADERBOARD ── */}
+      {groupStats && groupStats.leaderboard.length > 1 && (
+        <>
+          <Text style={styles.sectionHeader}>This Week</Text>
+          <View style={styles.card}>
+            {groupStats.leaderboard.map((m, i) => (
+              <View key={m.userId}>
+                {i > 0 && <View style={styles.leaderDivider} />}
+                <View style={[styles.leaderRow, m.isYou && styles.leaderRowYou]}>
+                  <Text style={styles.leaderRank}>
+                    {m.rank === 1 ? "👑" : m.rank === 2 ? "🥈" : m.rank === 3 ? "🥉" : `#${m.rank}`}
+                  </Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.leaderName, m.isYou && { color: colors.accentPrimary }]}>
+                      {m.displayName}{m.isYou ? " (you)" : ""}
+                    </Text>
+                    {m.streakDays > 0 && (
+                      <Text style={styles.leaderStreak}>🔥 {m.streakDays}d streak</Text>
+                    )}
+                  </View>
+                  <Text style={[styles.leaderTime, m.isYou && { color: colors.accentPrimary }]}>
+                    {formatDuration(m.avgPerDay)}/day
+                  </Text>
+                </View>
+              </View>
+            ))}
+            <View style={styles.leaderDivider} />
+            <View style={styles.leaderFooter}>
+              <Text style={styles.leaderFooterText}>
+                Group avg: {formatDuration(groupStats.groupAvgPerDay)}/day
+              </Text>
+              {groupStats.leaderboard.find((m) => m.isYou) && (
+                <Text style={[
+                  styles.leaderFooterText,
+                  {
+                    color: (groupStats.leaderboard.find((m) => m.isYou)?.avgPerDay ?? 0) <=
+                      groupStats.groupAvgPerDay ? colors.success : colors.destructive,
+                  },
+                ]}>
+                  You: {(groupStats.leaderboard.find((m) => m.isYou)?.avgPerDay ?? 0) <=
+                    groupStats.groupAvgPerDay ? "below avg ✓" : "above avg"}
+                </Text>
+              )}
+            </View>
+          </View>
+
+          {/* Per-app comparison */}
+          {Object.keys(groupStats.appStats).length > 0 && (
+            <>
+              <Text style={styles.sectionHeader}>By App</Text>
+              {Object.entries(groupStats.appStats)
+                .sort(([, a], [, b]) => b.groupAvg - a.groupAvg)
+                .slice(0, 5)
+                .map(([app, stat]) => {
+                  const you = stat.members.find((m) => m.isYou);
+                  const maxSecs = Math.max(...stat.members.map((m) => m.seconds), 1);
+                  return (
+                    <View key={app} style={[styles.card, { padding: spacing.md }]}>
+                      <Text style={styles.appCompTitle}>{app}</Text>
+                      {stat.members.map((m) => (
+                        <View key={m.userId} style={styles.appCompRow}>
+                          <Text style={[styles.appCompName, m.isYou && { color: colors.accentPrimary }]} numberOfLines={1}>
+                            {m.displayName}
+                          </Text>
+                          <View style={styles.appCompBarTrack}>
+                            <View
+                              style={[
+                                styles.appCompBar,
+                                {
+                                  width: `${Math.round((m.seconds / maxSecs) * 100)}%` as any,
+                                  backgroundColor: m.isYou ? colors.accentPrimary : colors.accentMuted,
+                                },
+                              ]}
+                            />
+                          </View>
+                          <Text style={styles.appCompTime}>{formatDuration(m.seconds)}</Text>
+                        </View>
+                      ))}
+                      <Text style={styles.appCompAvg}>avg: {formatDuration(stat.groupAvg)}</Text>
+                    </View>
+                  );
+                })}
+            </>
+          )}
+
+          {/* Streaks board */}
+          {groupStats.leaderboard.some((m) => m.streakDays > 0) && (
+            <>
+              <Text style={styles.sectionHeader}>Streaks</Text>
+              <View style={styles.card}>
+                {groupStats.leaderboard
+                  .filter((m) => m.streakDays > 0 || m.longestStreak > 0)
+                  .sort((a, b) => b.streakDays - a.streakDays)
+                  .map((m, i) => (
+                    <View key={m.userId}>
+                      {i > 0 && <View style={styles.leaderDivider} />}
+                      <View style={[styles.leaderRow, m.isYou && styles.leaderRowYou]}>
+                        <Text style={styles.leaderName}>
+                          {m.isYou ? "You" : m.displayName}
+                        </Text>
+                        <View style={{ alignItems: "flex-end" }}>
+                          <Text style={styles.streakNumber}>🔥 {m.streakDays}d</Text>
+                          <Text style={styles.streakBest}>best: {m.longestStreak}d</Text>
+                        </View>
+                      </View>
+                    </View>
+                  ))}
+              </View>
+            </>
+          )}
+
+          {/* Shame stats */}
+          {groupStats.leaderboard.some((m) => m.shamesSent > 0 || m.shamesReceived > 0) && (
+            <>
+              <Text style={styles.sectionHeader}>Shame Stats</Text>
+              <View style={styles.card}>
+                <View style={styles.shameGrid}>
+                  <View style={styles.shameCol}>
+                    <Text style={styles.shameColHeader}>Sent</Text>
+                    {groupStats.leaderboard
+                      .sort((a, b) => b.shamesSent - a.shamesSent)
+                      .map((m) => (
+                        <View key={m.userId} style={styles.shameRow}>
+                          <Text style={[styles.shameName, m.isYou && { color: colors.accentPrimary }]} numberOfLines={1}>
+                            {m.isYou ? "You" : m.displayName}
+                          </Text>
+                          <Text style={styles.shameCount}>{m.shamesSent}</Text>
+                        </View>
+                      ))}
+                  </View>
+                  <View style={styles.shameColDivider} />
+                  <View style={styles.shameCol}>
+                    <Text style={styles.shameColHeader}>Received</Text>
+                    {groupStats.leaderboard
+                      .sort((a, b) => b.shamesReceived - a.shamesReceived)
+                      .map((m) => (
+                        <View key={m.userId} style={styles.shameRow}>
+                          <Text style={[styles.shameName, m.isYou && { color: colors.accentPrimary }]} numberOfLines={1}>
+                            {m.isYou ? "You" : m.displayName}
+                          </Text>
+                          <Text style={styles.shameCount}>{m.shamesReceived}</Text>
+                        </View>
+                      ))}
+                  </View>
+                </View>
+              </View>
+            </>
+          )}
+
+          {/* Wall of Shame link */}
+          <TouchableOpacity
+            style={styles.wallLink}
+            onPress={() => navigation.navigate("WallOfShame")}
+          >
+            <Text style={styles.wallLinkText}>🏛️ Wall of Shame</Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+          </TouchableOpacity>
+
+          <View style={styles.sectionSpacer} />
+          <Text style={styles.sectionHeader}>Your Analytics</Text>
+        </>
+      )}
 
       {loading ? (
         <View style={styles.centered}>
@@ -1027,4 +1225,163 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   divider: { height: 1, backgroundColor: colors.border },
+
+  // ── Social leaderboard styles ──
+  leaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    gap: spacing.sm,
+  },
+  leaderRowYou: {
+    backgroundColor: `${colors.accentPrimary}14`,
+  },
+  leaderRank: {
+    width: 28,
+    fontSize: fontSize.body,
+    textAlign: "center",
+  },
+  leaderName: {
+    fontSize: fontSize.body,
+    fontWeight: "600",
+    color: colors.textPrimary,
+  },
+  leaderStreak: {
+    fontSize: fontSize.tiny,
+    color: colors.warning,
+    marginTop: 1,
+  },
+  leaderTime: {
+    fontSize: fontSize.body,
+    fontWeight: "600",
+    color: colors.textSecondary,
+  },
+  leaderDivider: {
+    height: 1,
+    backgroundColor: colors.surface2,
+    marginHorizontal: spacing.md,
+  },
+  leaderFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  leaderFooterText: {
+    fontSize: fontSize.small,
+    color: colors.textTertiary,
+  },
+
+  // App comparison
+  appCompTitle: {
+    fontSize: fontSize.title,
+    fontWeight: "700",
+    color: colors.textPrimary,
+    marginBottom: spacing.sm,
+  },
+  appCompRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 6,
+  },
+  appCompName: {
+    width: 60,
+    fontSize: fontSize.small,
+    color: colors.textSecondary,
+    fontWeight: "500",
+  },
+  appCompBarTrack: {
+    flex: 1,
+    height: 6,
+    backgroundColor: colors.surface2,
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  appCompBar: {
+    height: "100%",
+    borderRadius: 3,
+  },
+  appCompTime: {
+    width: 48,
+    fontSize: fontSize.small,
+    color: colors.textTertiary,
+    textAlign: "right",
+  },
+  appCompAvg: {
+    fontSize: fontSize.tiny,
+    color: colors.textTertiary,
+    marginTop: 4,
+  },
+
+  // Streaks
+  streakNumber: {
+    fontSize: fontSize.body,
+    fontWeight: "700",
+    color: colors.warning,
+  },
+  streakBest: {
+    fontSize: fontSize.tiny,
+    color: colors.textTertiary,
+  },
+
+  // Shame stats
+  shameGrid: {
+    flexDirection: "row",
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  shameCol: {
+    flex: 1,
+    gap: 6,
+  },
+  shameColDivider: {
+    width: 1,
+    backgroundColor: colors.border,
+    marginHorizontal: spacing.md,
+  },
+  shameColHeader: {
+    fontSize: fontSize.small,
+    fontWeight: "700",
+    color: colors.textSecondary,
+    marginBottom: 4,
+  },
+  shameRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  shameName: {
+    fontSize: fontSize.small,
+    color: colors.textSecondary,
+    flex: 1,
+  },
+  shameCount: {
+    fontSize: fontSize.body,
+    fontWeight: "700",
+    color: colors.textPrimary,
+    minWidth: 24,
+    textAlign: "right",
+  },
+
+  // Wall of Shame link
+  wallLink: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: colors.surface1,
+    borderRadius: 12,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  wallLinkText: {
+    fontSize: fontSize.title,
+    fontWeight: "600",
+    color: colors.textPrimary,
+  },
+
+  sectionSpacer: {
+    height: spacing.sm,
+  },
 });

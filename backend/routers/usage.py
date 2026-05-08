@@ -144,6 +144,13 @@ async def record_usage(
         daily_total_seconds=daily_total,
     )
 
+    # Update streak
+    from routers.social import update_streak
+    try:
+        update_streak(uid)
+    except Exception:
+        pass  # non-critical
+
     return {"status": "ok", "recorded": "close", "durationSeconds": session["durationSeconds"]}
 
 

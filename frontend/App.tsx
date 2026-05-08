@@ -10,6 +10,7 @@ import FriendsScreen from './src/screens/FriendsScreen';
 import ProfileScreen, { ProfileStackParamList } from './src/screens/ProfileScreen';
 import ShortcutSetupScreen from './src/screens/ShortcutSetupScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+import WallOfShameScreen from './src/screens/WallOfShameScreen';
 import SignInScreen from './src/screens/SignInScreen';
 import SignUpScreen from './src/screens/SignUpScreen';
 import { useAuth } from './src/hooks/useAuth';
@@ -22,8 +23,14 @@ export type RootTabParamList = {
   Profile: undefined;
 };
 
+export type StatsStackParamList = {
+  StatsMain: undefined;
+  WallOfShame: undefined;
+};
+
 const Tab = createBottomTabNavigator<RootTabParamList>();
 const ProfileStack = createNativeStackNavigator<ProfileStackParamList>();
+const StatsStack = createNativeStackNavigator<StatsStackParamList>();
 
 const ACTIVE_COLOR = colors.accentPrimary;
 const INACTIVE_COLOR = colors.textTertiary;
@@ -66,6 +73,31 @@ function ProfileStackNavigator() {
         options={{ headerTitle: 'Settings' }}
       />
     </ProfileStack.Navigator>
+  );
+}
+
+function StatsStackNavigator() {
+  return (
+    <StatsStack.Navigator
+      screenOptions={{
+        headerStyle,
+        headerTitleStyle,
+        headerTintColor: colors.accentPrimary,
+        headerShadowVisible: false,
+        contentStyle: { backgroundColor: colors.bg },
+      }}
+    >
+      <StatsStack.Screen
+        name="StatsMain"
+        component={StatsScreen}
+        options={{ headerShown: false }}
+      />
+      <StatsStack.Screen
+        name="WallOfShame"
+        component={WallOfShameScreen}
+        options={{ headerTitle: 'Wall of Shame' }}
+      />
+    </StatsStack.Navigator>
   );
 }
 
@@ -115,19 +147,20 @@ export default function App() {
           name="Home"
           component={HomeScreen}
           options={{
-            headerTitle: 'Today',
+            headerTitle: 'Live',
+            tabBarLabel: 'Live',
             tabBarIcon: ({ focused, color }) => (
-              <Ionicons name={focused ? 'home' : 'home-outline'} size={24} color={color} />
+              <Ionicons name={focused ? 'radio' : 'radio-outline'} size={24} color={color} />
             ),
           }}
         />
         <Tab.Screen
           name="Stats"
-          component={StatsScreen}
+          component={StatsStackNavigator}
           options={{
             headerShown: false,
             tabBarIcon: ({ focused, color }) => (
-              <Ionicons name={focused ? 'bar-chart' : 'bar-chart-outline'} size={24} color={color} />
+              <Ionicons name={focused ? 'trophy' : 'trophy-outline'} size={24} color={color} />
             ),
           }}
         />
