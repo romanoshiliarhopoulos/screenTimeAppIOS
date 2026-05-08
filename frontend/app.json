@@ -16,7 +16,13 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.screentimeapp.mobile",
       "infoPlist": {
-        "UIBackgroundModes": ["remote-notification"]
+        "UIBackgroundModes": [
+          "remote-notification",
+          "remote-notification",
+          "remote-notification",
+          "remote-notification"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "plugins": [
@@ -37,6 +43,18 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "e37e483f-d68a-47ed-9b11-a5065b39edcb"
+      }
+    },
+    "owner": "hili900",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/e37e483f-d68a-47ed-9b11-a5065b39edcb"
     }
   }
 }
