@@ -21,7 +21,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "../lib/firebase";
 import { colors, spacing, fontSize } from "../theme";
-import LeaderboardCard from "../components/LeaderboardCard";
+import LeaderboardCard, { type LeaderboardEntry } from "../components/LeaderboardCard";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
 
@@ -41,6 +41,8 @@ type Group = { id: string; name: string; memberCount: number };
 export default function FriendsScreen() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  const [byAppOpenIds, setByAppOpenIds] = useState<Set<string>>(new Set());
+  const [groupLeaderboards, setGroupLeaderboards] = useState<Record<string, LeaderboardEntry[]>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -311,15 +313,38 @@ export default function FriendsScreen() {
                     </View>
                   </TouchableOpacity>
 
-                  {/* Leaderboard — hidden when collapsed */}
+                  {/* Leaderboard + By App — hidden when collapsed */}
                   {!isCollapsed && (
-                    <LeaderboardCard
-                      groupId={g.id}
-                      groupName={g.name}
-                      compact={false}
-                      hideHeader
-                      refreshTick={refreshTick}
-                    />
+                    <>
+                      <LeaderboardCard
+                        groupId={g.id}
+                        groupName={g.name}
+                        compact={false}
+                        hideHeader
+                        refreshTick={refreshTick}
+                        onLoad={(entries) =>
+                          setGroupLeaderboards((prev) => ({ ...prev, [g.id]: entries }))
+                        }
+                      />
+
+                      {/* By App collapsible */}
+                      {groupLeaderboards[g.id]?.some((e) =>
+                        Object.keys(e.byApp).length > 0
+                      ) && (
+                        <ByAppSection
+                          groupId={g.id}
+                          entries={groupLeaderboards[g.id]}
+                          expanded={byAppOpenIds.has(g.id)}
+                          onToggle={() =>
+                            setByAppOpenIds((prev) => {
+                              const next = new Set(prev);
+                              next.has(g.id) ? next.delete(g.id) : next.add(g.id);
+                              return next;
+                            })
+                          }
+                        />
+                      )}
+                    </>
                   )}
                 </View>
               );
@@ -458,6 +483,158 @@ export default function FriendsScreen() {
     </View>
   );
 }
+
+// ── By App section ────────────────────────────────────────────────────────────
+
+function fmtDur(s: number): string {
+  if (s === 0) return "0m";
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0 && m > 0) return `${h}h ${m}m`;
+  if (h > 0) return `${h}h`;
+  return `${m}m`;
+}
+
+function ByAppSection({
+  groupId,
+  entries,
+  expanded,
+  onToggle,
+}: {
+  groupId: string;
+  entries: LeaderboardEntry[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  // Aggregate by app across all members
+  const appMap: Record<string, { total: number; members: { name: string; secs: number }[] }> = {};
+  for (const entry of entries) {
+    for (const [app, secs] of Object.entries(entry.byApp)) {
+      if (!appMap[app]) appMap[app] = { total: 0, members: [] };
+      appMap[app].total += secs;
+      appMap[app].members.push({ name: entry.displayName, secs });
+    }
+  }
+  const apps = Object.entries(appMap).sort((a, b) => b[1].total - a[1].total);
+  if (apps.length === 0) return null;
+
+  return (
+    <View style={baStyles.wrap}>
+      <TouchableOpacity style={baStyles.header} onPress={onToggle} activeOpacity={0.75}>
+        <Text style={baStyles.headerText}>By App This Week</Text>
+        <Ionicons
+          name={expanded ? "chevron-up" : "chevron-down"}
+          size={14}
+          color={colors.textTertiary}
+        />
+      </TouchableOpacity>
+
+      {expanded &&
+        apps.map(([app, { total, members }], i) => {
+          const maxSecs = Math.max(...members.map((m) => m.secs), 1);
+          return (
+            <View key={app} style={[baStyles.appBlock, i > 0 && baStyles.appBlockDivider]}>
+              <View style={baStyles.appHeaderRow}>
+                <Text style={baStyles.appName}>{app}</Text>
+                <Text style={baStyles.appTotal}>{fmtDur(total)} total</Text>
+              </View>
+              {members
+                .sort((a, b) => b.secs - a.secs)
+                .map((m) => (
+                  <View key={m.name} style={baStyles.memberRow}>
+                    <Text style={baStyles.memberName} numberOfLines={1}>{m.name}</Text>
+                    <View style={baStyles.barTrack}>
+                      <View
+                        style={[
+                          baStyles.bar,
+                          { width: `${Math.round((m.secs / maxSecs) * 100)}%` as any },
+                        ]}
+                      />
+                    </View>
+                    <Text style={baStyles.memberTime}>{fmtDur(m.secs)}</Text>
+                  </View>
+                ))}
+            </View>
+          );
+        })}
+    </View>
+  );
+}
+
+const baStyles = StyleSheet.create({
+  wrap: {
+    backgroundColor: colors.surface2,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: spacing.md,
+    paddingVertical: 11,
+  },
+  headerText: {
+    fontSize: fontSize.small,
+    fontWeight: "600",
+    color: colors.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.3,
+  },
+  appBlock: {
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.sm,
+  },
+  appBlockDivider: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.sm,
+  },
+  appHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    marginBottom: 6,
+  },
+  appName: {
+    fontSize: fontSize.body,
+    fontWeight: "700",
+    color: colors.textPrimary,
+  },
+  appTotal: {
+    fontSize: fontSize.tiny,
+    color: colors.textTertiary,
+  },
+  memberRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 5,
+  },
+  memberName: {
+    width: 72,
+    fontSize: fontSize.small,
+    color: colors.textSecondary,
+  },
+  barTrack: {
+    flex: 1,
+    height: 4,
+    backgroundColor: colors.border,
+    borderRadius: 2,
+    overflow: "hidden",
+  },
+  bar: {
+    height: "100%",
+    backgroundColor: colors.accentMuted,
+    borderRadius: 2,
+  },
+  memberTime: {
+    width: 40,
+    fontSize: fontSize.small,
+    color: colors.textTertiary,
+    textAlign: "right",
+  },
+});
 
 const FAB_SIZE = 56;
 const FAB_MARGIN = 24;

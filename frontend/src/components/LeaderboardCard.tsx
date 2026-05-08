@@ -56,12 +56,15 @@ function timeColor(pct: number): string {
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
+export type { LeaderboardEntry };
+
 type Props = {
   groupId: string;
   groupName: string;
   compact?: boolean;
   hideHeader?: boolean;
   refreshTick?: number;
+  onLoad?: (entries: LeaderboardEntry[], groupAvg: number) => void;
 };
 
 export default function LeaderboardCard({
@@ -69,6 +72,7 @@ export default function LeaderboardCard({
   compact = false,
   hideHeader = false,
   refreshTick = 0,
+  onLoad,
 }: Props) {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [groupAvg, setGroupAvg] = useState(0);
@@ -92,8 +96,11 @@ export default function LeaderboardCard({
         if (!res.ok || cancelled) return;
         const data = await res.json();
         if (!cancelled) {
-          setEntries(data.leaderboard ?? []);
-          setGroupAvg(data.groupAvgSeconds ?? 0);
+          const loaded = data.leaderboard ?? [];
+          const avg = data.groupAvgSeconds ?? 0;
+          setEntries(loaded);
+          setGroupAvg(avg);
+          onLoad?.(loaded, avg);
         }
       } finally {
         if (!cancelled) setLoading(false);

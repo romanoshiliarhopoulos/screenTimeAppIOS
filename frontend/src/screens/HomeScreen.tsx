@@ -13,6 +13,7 @@ import {
 import { StatusBar } from "expo-status-bar";
 import { Ionicons } from "@expo/vector-icons";
 import { onAuthStateChanged } from "firebase/auth";
+import { useNavigation } from "@react-navigation/native";
 import { auth } from "../lib/firebase";
 import * as Notifications from "expo-notifications";
 import * as Device from "expo-device";
@@ -84,6 +85,8 @@ const QUICK_REACTIONS = [
 // ── Component ────────────────────────────────────────────────────────
 
 export default function HomeScreen() {
+  const navigation = useNavigation<any>();
+
   // Push token registration
   useEffect(() => {
     async function registerToken() {
@@ -299,6 +302,16 @@ export default function HomeScreen() {
           ))}
         </>
       )}
+
+      {/* Wall of Shame link */}
+      <TouchableOpacity
+        style={styles.wallLink}
+        onPress={() => navigation.navigate("Stats", { screen: "WallOfShame" })}
+        activeOpacity={0.75}
+      >
+        <Text style={styles.wallLinkLabel}>🏛️ Wall of Shame</Text>
+        <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
+      </TouchableOpacity>
 
       {/* My status card */}
       {me && (
@@ -749,6 +762,23 @@ const styles = StyleSheet.create({
     fontSize: fontSize.tiny,
     color: colors.textTertiary,
     marginTop: 4,
+  },
+
+  // Wall of Shame link
+  wallLink: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: colors.surface1,
+    borderRadius: 10,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    marginBottom: spacing.sm,
+  },
+  wallLinkLabel: {
+    fontSize: fontSize.body,
+    fontWeight: "600",
+    color: colors.textSecondary,
   },
 
   // You divider
