@@ -58,7 +58,7 @@ function getShameDescription(entry: WallEntry): string {
     case "streak_broken":
       return `Broke a ${detail.streakDays || "??"}-day streak`;
     case "late_night":
-      return `Scrolling ${detail.appName || ""}at ${detail.time || "late night"}`;
+      return `Scrolling ${detail.appName || "an app"} at ${detail.time || "late night"}`;
     case "daily_limit":
       return `Exceeded daily limit on ${detail.appName || "an app"}`;
     default:
