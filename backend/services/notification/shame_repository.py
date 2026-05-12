@@ -1,6 +1,7 @@
 from datetime import datetime, timezone, timedelta
 
 from firestore_client import db
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 
 def record(from_user_id: str, to_user_id: str, app_name: str) -> str:
@@ -21,9 +22,9 @@ def is_on_cooldown(from_user_id: str, to_user_id: str, cooldown_seconds: int) ->
     ).isoformat()
     docs = list(
         db.collection("shameEvents")
-        .where("fromUserId", "==", from_user_id)
-        .where("toUserId", "==", to_user_id)
-        .where("sentAt", ">=", cutoff)
+        .where(filter=FieldFilter("fromUserId", "==", from_user_id))
+        .where(filter=FieldFilter("toUserId", "==", to_user_id))
+        .where(filter=FieldFilter("sentAt", ">=", cutoff))
         .limit(1)
         .stream()
     )

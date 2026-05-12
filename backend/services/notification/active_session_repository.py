@@ -2,6 +2,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from firestore_client import db
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 
 def _doc_id(user_id: str, device_id: str, app_name: str) -> str:
@@ -59,7 +60,7 @@ def get_all_stale(min_elapsed_seconds: int) -> list[dict]:
     ).isoformat()
     docs = (
         db.collection("activeSessions")
-        .where("openTime", "<=", cutoff)
+        .where(filter=FieldFilter("openTime", "<=", cutoff))
         .stream()
     )
     return [{"id": d.id, **d.to_dict()} for d in docs]
@@ -69,7 +70,7 @@ def get_active_for_user(user_id: str) -> list[dict]:
     """Return all active sessions for a given user."""
     docs = (
         db.collection("activeSessions")
-        .where("userId", "==", user_id)
+        .where(filter=FieldFilter("userId", "==", user_id))
         .stream()
     )
     return [{"id": d.id, **d.to_dict()} for d in docs]

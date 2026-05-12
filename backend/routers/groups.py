@@ -82,10 +82,13 @@ async def join_group(group_id: str, uid: str = Depends(get_uid)):
     display_name = _get_display_name(uid)
     now = datetime.now(timezone.utc).isoformat()
 
-    group_ref.update({"memberIds": ArrayUnion([uid])})
-    group_ref.collection("members").document(uid).set(
-        {"displayName": display_name, "joinedAt": now, "role": "member"}
+    batch = db.batch()
+    batch.update(group_ref, {"memberIds": ArrayUnion([uid])})
+    batch.set(
+        group_ref.collection("members").document(uid),
+        {"displayName": display_name, "joinedAt": now, "role": "member"},
     )
+    batch.commit()
 
     return {"status": "joined", "groupId": group_id, "name": data["name"]}
 
@@ -104,8 +107,10 @@ async def leave_group(group_id: str, uid: str = Depends(get_uid)):
     if uid not in data.get("memberIds", []):
         raise HTTPException(status_code=400, detail="Not a member")
 
-    group_ref.update({"memberIds": ArrayRemove([uid])})
-    group_ref.collection("members").document(uid).delete()
+    batch = db.batch()
+    batch.update(group_ref, {"memberIds": ArrayRemove([uid])})
+    batch.delete(group_ref.collection("members").document(uid))
+    batch.commit()
 
     return {"status": "left", "groupId": group_id}
 

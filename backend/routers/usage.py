@@ -110,6 +110,9 @@ async def record_usage(
 
     open_time = matching_open.to_dict()["eventTime"]
 
+    # Delete the matched open event so it can never be reused by a future close.
+    matching_open.reference.delete()
+
     # Fetch recent sessions by appName only (single-field — no composite index needed).
     previous_close_time: Optional[str] = None
     session_docs = list(

@@ -285,7 +285,6 @@ You don't get a notification every time a friend opens an app — that becomes w
 | Friend opens a tracked app after midnight | "Jordan is doomscrolling at 2am 💀" |
 | Friend opens an app 10+ times in one day | "Alex has opened Instagram 10 times today 😬" |
 
-**Cooldown:** You can receive one shame opportunity notification per friend **every 20 minutes**, per app. Hard cap of 5 shame opportunity notifications per hour across all friends (settings-adjustable).
 
 ### Status notifications (your own activity)
 

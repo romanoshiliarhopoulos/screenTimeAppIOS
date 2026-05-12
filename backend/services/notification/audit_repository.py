@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from firestore_client import db
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 
 def record(
@@ -31,10 +32,10 @@ def was_notified_today(user_id: str, notification_type: str, app_name: str) -> b
         db.collection("users")
         .document(user_id)
         .collection("notifications")
-        .where("type", "==", notification_type)
-        .where("appName", "==", app_name)
-        .where("deliveryStatus", "==", "sent")
-        .where("sentAt", ">=", f"{today}T00:00:00+00:00")
+        .where(filter=FieldFilter("type", "==", notification_type))
+        .where(filter=FieldFilter("appName", "==", app_name))
+        .where(filter=FieldFilter("deliveryStatus", "==", "sent"))
+        .where(filter=FieldFilter("sentAt", ">=", f"{today}T00:00:00+00:00"))
         .limit(1)
         .stream()
     )

@@ -38,7 +38,12 @@ def compute_session(
             open_time = inferred_open.isoformat()
             status = "inferred_unlock"
 
-    duration = max(0, int((close_dt - open_dt).total_seconds()))
+    raw_duration = max(0, int((close_dt - open_dt).total_seconds()))
+    # If the gap is over 4 hours, the open event was almost certainly orphaned
+    # (app left "open" across unlocks/restarts). Cap those at 20 minutes.
+    ORPHAN_THRESHOLD = 4 * 60 * 60
+    ORPHAN_CAP = 20 * 60
+    duration = ORPHAN_CAP if raw_duration > ORPHAN_THRESHOLD else raw_duration
 
     return {
         "userId": uid,

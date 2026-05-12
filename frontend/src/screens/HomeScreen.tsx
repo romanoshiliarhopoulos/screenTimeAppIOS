@@ -24,7 +24,6 @@ import {
   collection,
   query,
   where,
-  orderBy,
   limit,
   onSnapshot,
 } from "firebase/firestore";
@@ -163,6 +162,14 @@ const REACTIONS = [
   { emoji: "emergency", icon: "🚨", label: "Emergency" },
 ];
 
+// Maps raw reaction keys stored in Firestore to display emojis
+const REACTION_EMOJI_MAP: Record<string, string> = {
+  angry: "😤",
+  facepalm: "🤦",
+  eyes: "👀",
+  emergency: "🚨",
+};
+
 // ── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function HomeScreen() {
@@ -251,16 +258,29 @@ export default function HomeScreen() {
       onSnapshot(
         query(collection(db, "activeSessions"), where("userId", "in", chunk)),
         (snap) => {
-          const liveIds = new Set(snap.docs.map((d) => d.data().userId as string));
+          // Build a map of userId → their latest active session data
+          const liveMap = new Map<string, { currentApp: string; sessionMinutes: number }>();
+          snap.docs.forEach((d) => {
+            const data = d.data();
+            const uid = data.userId as string;
+            const openTime = data.openTime as string;
+            const sessionMinutes = Math.max(0, Math.floor((Date.now() - new Date(openTime).getTime()) / 60000));
+            // Keep the latest session per user (highest openTime)
+            if (!liveMap.has(uid) || openTime > (snap.docs.find((x) => x.data().userId === uid && liveMap.has(uid))?.data().openTime ?? "")) {
+              liveMap.set(uid, { currentApp: data.appName as string, sessionMinutes });
+            }
+          });
           setFriends((prev) =>
-            prev.map((f) => ({
-              ...f,
-              status: liveIds.has(f.userId)
-                ? "live"
-                : f.status === "live"
-                  ? "recent"
-                  : f.status,
-            })),
+            prev.map((f) => {
+              if (liveMap.has(f.userId)) {
+                const { currentApp, sessionMinutes } = liveMap.get(f.userId)!;
+                return { ...f, status: "live", currentApp, sessionMinutes };
+              }
+              return {
+                ...f,
+                status: f.status === "live" ? "recent" : f.status,
+              };
+            }),
           );
         },
         (err) => console.warn("activeSessions snapshot error:", err.code),
@@ -269,36 +289,53 @@ export default function HomeScreen() {
     return () => unsubs.forEach((u) => u());
   }, [myUid, friendIds.join(",")]);
 
-  // Real-time: shameQueue feed — two listeners (to me + from me) filtered by
-  // current user so we only see our own group's shames, not everyone's.
+  // Real-time: shameQueue feed — all shames between anyone in the same groups.
+  // Queries by fromUserId (uses the composite index) and filters recipients
+  // client-side to group members only. Re-subscribes when group membership changes.
   useEffect(() => {
-    if (!myUid) return;
-    const toMe = new Map<string, FeedItem>();
-    const fromMe = new Map<string, FeedItem>();
+    if (!myUid || friendIds.length === 0) return;
+    const allIds = [myUid, ...friendIds];
+    const allIdsSet = new Set(allIds);
+    const shameMap = new Map<string, FeedItem>();
+
     const toDoc = (d: any): FeedItem => ({
       id: d.id,
       kind: "shame" as const,
       ...(d.data() as Omit<FeedItem, "id" | "kind">),
     });
     const merge = () => {
-      const combined = new Map([...toMe, ...fromMe]);
-      const all = Array.from(combined.values()).sort((a, b) =>
+      const all = Array.from(shameMap.values()).sort((a, b) =>
         (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
       );
       setWall(all.slice(0, 30));
     };
-    const unsub1 = onSnapshot(
-      query(collection(db, "shameQueue"), where("toUserId", "==", myUid), orderBy("createdAt", "desc"), limit(20)),
-      (snap) => { snap.docs.forEach((d) => toMe.set(d.id, toDoc(d))); merge(); },
-      (err) => console.warn("shameQueue snapshot error:", err.code),
-    );
-    const unsub2 = onSnapshot(
-      query(collection(db, "shameQueue"), where("fromUserId", "==", myUid), orderBy("createdAt", "desc"), limit(20)),
-      (snap) => { snap.docs.forEach((d) => fromMe.set(d.id, toDoc(d))); merge(); },
-      (err) => console.warn("shameQueue snapshot error:", err.code),
-    );
-    return () => { unsub1(); unsub2(); };
-  }, [myUid]);
+
+    const unsubs: (() => void)[] = [];
+    for (let i = 0; i < allIds.length; i += 30) {
+      const chunk = allIds.slice(i, i + 30);
+      unsubs.push(
+        onSnapshot(
+          query(
+            collection(db, "shameQueue"),
+            where("fromUserId", "in", chunk),
+            limit(100),
+          ),
+          (snap) => {
+            snap.docs.forEach((d) => {
+              const data = d.data();
+              // Only show shames where the recipient is also a group member
+              if (allIdsSet.has(data.toUserId as string)) {
+                shameMap.set(d.id, toDoc(d));
+              }
+            });
+            merge();
+          },
+          (err) => console.warn("shameQueue snapshot error:", err.code),
+        ),
+      );
+    }
+    return () => unsubs.forEach((u) => u());
+  }, [myUid, friendIds.join(",")]);
 
   async function fetchAll() {
     await Promise.all([fetchStats(), fetchAwards()]);
@@ -1161,14 +1198,18 @@ function FeedEntry({
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   if (entry.kind === "shame") {
-    const isEmergency = entry.shameType === "quick" && entry.reaction === "🚨";
+    // Normalise reaction: Firestore stores raw keys ("angry"), backend feed returns emojis ("😤")
+    const reactionEmoji = entry.reaction
+      ? (REACTION_EMOJI_MAP[entry.reaction] ?? entry.reaction)
+      : undefined;
+    const isEmergency = entry.shameType === "quick" && reactionEmoji === "🚨";
     const isVideo = entry.shameType === "video";
     const fromMe = entry.fromUserId === myUid;
     const toMe = entry.toUserId === myUid;
     const fromLabel = fromMe ? "You" : entry.fromName;
-    const toLabel = toMe ? "you" : entry.toName;
-    const verb = entry.reaction
-      ? (REACTION_LABELS[entry.reaction] ?? "shamed")
+    const toLabel = toMe ? "you" : (entry.toName ?? "someone");
+    const verb = reactionEmoji
+      ? (REACTION_LABELS[reactionEmoji] ?? "shamed")
       : isVideo
         ? "sent a video shame to"
         : "shamed";
@@ -1190,7 +1231,7 @@ function FeedEntry({
               <Text style={toMe ? styles.feedNameMe : styles.feedName}>
                 {toLabel}
               </Text>
-              {entry.reaction ? <Text> {entry.reaction}</Text> : null}
+              {reactionEmoji ? <Text> {reactionEmoji}</Text> : null}
             </Text>
             <Text style={styles.feedTime}>{relTime(entry.createdAt)}</Text>
           </View>

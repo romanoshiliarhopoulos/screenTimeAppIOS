@@ -1,6 +1,22 @@
 {
   "indexes": [
     {
+      "collectionGroup": "shameQueue",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "toUserId",  "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "shameQueue",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "fromUserId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "shameEvents",
       "queryScope": "COLLECTION",
       "fields": [
