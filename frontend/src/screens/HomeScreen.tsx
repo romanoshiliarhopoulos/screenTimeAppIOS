@@ -34,6 +34,7 @@ import * as Device from "expo-device";
 import { colors, spacing, fontSize } from "../theme";
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? "";
+const AnimatedView = Animated.View as unknown as React.ComponentType<any>;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -259,15 +260,30 @@ export default function HomeScreen() {
         query(collection(db, "activeSessions"), where("userId", "in", chunk)),
         (snap) => {
           // Build a map of userId → their latest active session data
-          const liveMap = new Map<string, { currentApp: string; sessionMinutes: number }>();
+          const liveMap = new Map<
+            string,
+            { currentApp: string; sessionMinutes: number }
+          >();
           snap.docs.forEach((d) => {
             const data = d.data();
             const uid = data.userId as string;
             const openTime = data.openTime as string;
-            const sessionMinutes = Math.max(0, Math.floor((Date.now() - new Date(openTime).getTime()) / 60000));
+            const sessionMinutes = Math.max(
+              0,
+              Math.floor((Date.now() - new Date(openTime).getTime()) / 60000),
+            );
             // Keep the latest session per user (highest openTime)
-            if (!liveMap.has(uid) || openTime > (snap.docs.find((x) => x.data().userId === uid && liveMap.has(uid))?.data().openTime ?? "")) {
-              liveMap.set(uid, { currentApp: data.appName as string, sessionMinutes });
+            if (
+              !liveMap.has(uid) ||
+              openTime >
+                (snap.docs
+                  .find((x) => x.data().userId === uid && liveMap.has(uid))
+                  ?.data().openTime ?? "")
+            ) {
+              liveMap.set(uid, {
+                currentApp: data.appName as string,
+                sessionMinutes,
+              });
             }
           });
           setFriends((prev) =>
@@ -520,7 +536,7 @@ export default function HomeScreen() {
             <Text style={styles.headerTitle}>Live</Text>
             {liveCount > 0 && (
               <View style={styles.liveRow}>
-                <Animated.View
+                <AnimatedView
                   style={[styles.livePulse, { opacity: pulseAnim }] as any}
                 />
                 <Text style={styles.liveCount}>{liveCount} scrolling now</Text>
@@ -668,7 +684,7 @@ const FriendPill = React.memo(function FriendPill({
     <View style={[styles.pill, isLive && styles.pillLive]}>
       <View style={styles.pillStatusRow}>
         {isLive ? (
-          <Animated.View
+          <AnimatedView
             style={
               [styles.pillDot, styles.dotGreen, { opacity: pulseAnim }] as any
             }
