@@ -18,8 +18,12 @@ const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 export default function SettingsScreen() {
   const [displayName, setDisplayName] = useState('');
   const [barkApiKey, setBarkApiKey] = useState('');
+  const [quietStart, setQuietStart] = useState('');
+  const [quietEnd, setQuietEnd] = useState('');
+  const [dailyCap, setDailyCap] = useState('60');
   const [saving, setSaving] = useState(false);
   const [savingBark, setSavingBark] = useState(false);
+  const [savingLimits, setSavingLimits] = useState(false);
   const [testingNotif, setTestingNotif] = useState(false);
 
   useEffect(() => {
@@ -32,6 +36,9 @@ export default function SettingsScreen() {
         if (res.ok) {
           const data = await res.json();
           if (data.barkApiKey) setBarkApiKey(data.barkApiKey);
+          if (data.quietHoursStart) setQuietStart(data.quietHoursStart);
+          if (data.quietHoursEnd) setQuietEnd(data.quietHoursEnd);
+          if (data.dailyCapSeconds) setDailyCap(String(Math.round(data.dailyCapSeconds / 60)));
         }
       } catch (_) {}
     }
@@ -164,6 +171,63 @@ export default function SettingsScreen() {
           disabled={testingNotif || !barkApiKey.trim()}
         >
           {testingNotif ? <ActivityIndicator color={colors.accentPrimary} /> : <Text style={styles.secondaryButtonText}>Send Test Notification</Text>}
+        </TouchableOpacity>
+      </View>
+
+      <Text style={styles.sectionHeader}>Limits & Gateway</Text>
+      <View style={styles.card}>
+        <Text style={styles.fieldLabel}>Daily screen time limit (minutes)</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="60"
+          placeholderTextColor={colors.textTertiary}
+          value={dailyCap}
+          onChangeText={setDailyCap}
+          keyboardType="number-pad"
+        />
+        <Text style={styles.fieldLabel}>Quiet hours (24h format, e.g. 23:00)</Text>
+        <View style={{ flexDirection: 'row', gap: spacing.sm }}>
+          <TextInput
+            style={[styles.input, { flex: 1 }]}
+            placeholder="Start (23:00)"
+            placeholderTextColor={colors.textTertiary}
+            value={quietStart}
+            onChangeText={setQuietStart}
+          />
+          <TextInput
+            style={[styles.input, { flex: 1 }]}
+            placeholder="End (07:00)"
+            placeholderTextColor={colors.textTertiary}
+            value={quietEnd}
+            onChangeText={setQuietEnd}
+          />
+        </View>
+        <TouchableOpacity
+          style={styles.primaryButton}
+          onPress={async () => {
+            setSavingLimits(true);
+            try {
+              const token = await auth.currentUser?.getIdToken();
+              const body: any = {};
+              const capMins = parseInt(dailyCap, 10);
+              if (!isNaN(capMins) && capMins > 0) body.dailyCapSeconds = capMins * 60;
+              if (quietStart.trim()) body.quietHoursStart = quietStart.trim();
+              if (quietEnd.trim()) body.quietHoursEnd = quietEnd.trim();
+              await fetch(`${API_URL}/api/users/me/notification-settings`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify(body),
+              });
+              Alert.alert('Saved', 'Limits updated.');
+            } catch (e: any) {
+              Alert.alert('Error', e.message);
+            } finally {
+              setSavingLimits(false);
+            }
+          }}
+          disabled={savingLimits}
+        >
+          {savingLimits ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Save Limits</Text>}
         </TouchableOpacity>
       </View>
 

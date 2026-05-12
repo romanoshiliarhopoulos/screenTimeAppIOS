@@ -546,13 +546,14 @@ export default function StatsScreen() {
       start.setDate(today.getDate() - GRID_FETCH_DAYS);
 
       const url = `${API_URL}/api/usage/stats?start=${toDateString(start)}&end=${toDateString(today)}`;
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) return;
+      const statsRes = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
 
-      const data: DailySummary[] = await res.json();
-      const map: Record<string, DailySummary> = {};
-      for (const entry of data) map[entry.date] = entry;
-      setSummaries(map);
+      if (statsRes.ok) {
+        const data: DailySummary[] = await statsRes.json();
+        const map: Record<string, DailySummary> = {};
+        for (const entry of data) map[entry.date] = entry;
+        setSummaries(map);
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -1027,4 +1028,5 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   divider: { height: 1, backgroundColor: colors.border },
+
 });

@@ -6,7 +6,6 @@ import {
   ActivityIndicator,
   TouchableOpacity,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { auth } from "../lib/firebase";
 import { colors, spacing, fontSize } from "../theme";
 
@@ -18,10 +17,13 @@ type LeaderboardEntry = {
   totalSeconds: number;
   sessionCount: number;
   byApp: Record<string, number>;
+  streakDays: number;
+  isLive: boolean;
+  dailyCapSeconds: number;
   rank: number;
 };
 
-function formatDuration(s: number): string {
+function fmt(s: number): string {
   if (s === 0) return "0m";
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -32,33 +34,48 @@ function formatDuration(s: number): string {
 
 function localDateString(): string {
   const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function usagePct(total: number, cap: number): number {
+  if (cap <= 0) return 0;
+  return Math.min(total / cap, 1.2); // allow slight overflow for visual
+}
+
+function barColor(pct: number): string {
+  if (pct >= 1.0) return colors.destructive;
+  if (pct >= 0.75) return colors.warning;
+  return colors.success;
+}
+
+function timeColor(pct: number): string {
+  if (pct >= 1.0) return colors.destructive;
+  if (pct >= 0.75) return colors.warning;
+  return colors.textPrimary;
 }
 
 const MEDALS = ["🥇", "🥈", "🥉"];
 
+export type { LeaderboardEntry };
+
 type Props = {
   groupId: string;
   groupName: string;
-  /** true = top-3 preview for HomeScreen, false = full list with app breakdown */
   compact?: boolean;
-  /** true = hide the card's own header (when parent already shows group name) */
   hideHeader?: boolean;
-  /** increment to trigger a re-fetch on pull-to-refresh */
   refreshTick?: number;
+  onLoad?: (entries: LeaderboardEntry[], groupAvg: number) => void;
 };
 
 export default function LeaderboardCard({
   groupId,
-  groupName,
   compact = false,
   hideHeader = false,
   refreshTick = 0,
+  onLoad,
 }: Props) {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
+  const [groupAvg, setGroupAvg] = useState(0);
   const [loading, setLoading] = useState(true);
   const [expandedUid, setExpandedUid] = useState<string | null>(null);
 
@@ -71,7 +88,6 @@ export default function LeaderboardCard({
       try {
         const token = await auth.currentUser?.getIdToken();
         if (!token) return;
-        // Pass local date so server doesn't use UTC today
         const date = localDateString();
         const res = await fetch(
           `${API_URL}/api/groups/${groupId}/leaderboard?date=${date}`,
@@ -79,7 +95,13 @@ export default function LeaderboardCard({
         );
         if (!res.ok || cancelled) return;
         const data = await res.json();
-        if (!cancelled) setEntries(data.leaderboard ?? []);
+        if (!cancelled) {
+          const loaded = data.leaderboard ?? [];
+          const avg = data.groupAvgSeconds ?? 0;
+          setEntries(loaded);
+          setGroupAvg(avg);
+          onLoad?.(loaded, avg);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -93,73 +115,42 @@ export default function LeaderboardCard({
 
   if (loading) {
     return (
-      <View style={[styles.card, hideHeader && styles.cardNoTop]}>
-        <ActivityIndicator
-          color={colors.accentPrimary}
-          style={{ marginVertical: spacing.md }}
-        />
+      <View style={hideHeader ? styles.innerWrap : styles.card}>
+        <ActivityIndicator color={colors.accentPrimary} style={{ marginVertical: spacing.md }} />
       </View>
     );
   }
 
   if (entries.length === 0) {
     return (
-      <View style={[styles.card, hideHeader && styles.cardNoTop]}>
-        <Text style={styles.emptyText}>No usage data yet for today.</Text>
+      <View style={hideHeader ? styles.innerWrap : styles.card}>
+        <Text style={styles.emptyText}>No data yet — use Shortcuts to record sessions.</Text>
       </View>
     );
   }
 
   return (
-    <View style={[styles.card, hideHeader && styles.cardNoTop]}>
-      {/* Card header — shown on HomeScreen compact view */}
-      {!hideHeader && (
-        <>
-          <View style={styles.header}>
-            <View>
-              <Text style={styles.groupName}>{groupName}</Text>
-              <Text style={styles.subtitle}>
-                Today · {entries.length} member{entries.length !== 1 ? "s" : ""}
-              </Text>
-            </View>
-            {myEntry && (
-              <View style={styles.myRankBadge}>
-                <Text style={styles.myRankText}>
-                  {myEntry.rank <= 3 ? MEDALS[myEntry.rank - 1] : `#${myEntry.rank}`}{" "}
-                  you
-                </Text>
-              </View>
-            )}
-          </View>
-          <View style={styles.divider} />
-        </>
-      )}
-
-      {/* Sub-header when header is hidden (inside Friends expanded view) */}
-      {hideHeader && (
-        <>
-          <View style={styles.subHeader}>
-            <Text style={styles.subtitle}>
-              Today · {entries.length} member{entries.length !== 1 ? "s" : ""}
+    <View style={hideHeader ? styles.innerWrap : styles.card}>
+      {/* Summary bar */}
+      <View style={styles.summaryRow}>
+        <Text style={styles.summaryText}>
+          {entries.length} member{entries.length !== 1 ? "s" : ""} · avg {fmt(groupAvg)} today
+        </Text>
+        {myEntry && (
+          <View style={styles.myBadge}>
+            <Text style={styles.myBadgeText}>
+              {myEntry.rank <= 3 ? MEDALS[myEntry.rank - 1] : `#${myEntry.rank}`} you
             </Text>
-            {myEntry && (
-              <View style={styles.myRankBadge}>
-                <Text style={styles.myRankText}>
-                  {myEntry.rank <= 3 ? MEDALS[myEntry.rank - 1] : `#${myEntry.rank}`}{" "}
-                  you
-                </Text>
-              </View>
-            )}
           </View>
-          <View style={styles.divider} />
-        </>
-      )}
+        )}
+      </View>
+      <View style={styles.divider} />
 
-      {/* Rows */}
       {visible.map((entry, i) => {
         const isMe = entry.userId === currentUid;
         const medal = entry.rank <= 3 ? MEDALS[entry.rank - 1] : null;
         const isExpanded = !compact && expandedUid === entry.userId;
+        const pct = usagePct(entry.totalSeconds, entry.dailyCapSeconds);
         const appEntries = Object.entries(entry.byApp).sort((a, b) => b[1] - a[1]);
 
         return (
@@ -168,63 +159,68 @@ export default function LeaderboardCard({
 
             <TouchableOpacity
               style={[styles.row, isMe && styles.rowMe]}
-              onPress={() =>
-                !compact && setExpandedUid(isExpanded ? null : entry.userId)
-              }
+              onPress={() => !compact && setExpandedUid(isExpanded ? null : entry.userId)}
               activeOpacity={compact ? 1 : 0.7}
             >
+              {/* Rank */}
               <Text style={[styles.rank, isMe && styles.rankMe]}>
                 {medal ?? `#${entry.rank}`}
               </Text>
 
+              {/* Name + live dot + progress bar */}
               <View style={styles.nameBlock}>
-                <Text style={[styles.name, isMe && styles.nameMe]} numberOfLines={1}>
-                  {entry.displayName}
-                  {isMe ? <Text style={styles.youTag}> · you</Text> : null}
-                </Text>
-                {!compact && (
-                  <Text style={styles.sessions}>
-                    {entry.sessionCount} session{entry.sessionCount !== 1 ? "s" : ""}
+                <View style={styles.nameRow}>
+                  <Text style={[styles.name, isMe && styles.nameMe]} numberOfLines={1}>
+                    {entry.displayName}
+                    {isMe ? <Text style={styles.youTag}> · you</Text> : null}
                   </Text>
-                )}
+                  {entry.isLive && (
+                    <View style={styles.liveDot} />
+                  )}
+                </View>
+                {/* Progress bar */}
+                <View style={styles.barTrack}>
+                  <View
+                    style={[
+                      styles.bar,
+                      {
+                        width: `${Math.min(Math.round(pct * 100), 100)}%` as any,
+                        backgroundColor: barColor(pct),
+                      },
+                    ]}
+                  />
+                </View>
               </View>
 
+              {/* Right: streak + time */}
               <View style={styles.rightBlock}>
-                <Text style={[styles.time, isMe && styles.timeMe]}>
-                  {formatDuration(entry.totalSeconds)}
-                </Text>
-                {!compact && (
-                  <Ionicons
-                    name={isExpanded ? "chevron-up" : "chevron-down"}
-                    size={13}
-                    color={colors.textTertiary}
-                    style={{ marginLeft: 4 }}
-                  />
+                {entry.streakDays > 0 && (
+                  <View style={styles.streakBadge}>
+                    <Text style={styles.streakText}>🔥{entry.streakDays}</Text>
+                  </View>
                 )}
+                <Text style={[styles.time, { color: timeColor(pct) }, isMe && pct < 0.75 && styles.timeMe]}>
+                  {fmt(entry.totalSeconds)}
+                </Text>
               </View>
             </TouchableOpacity>
 
-            {/* App breakdown */}
+            {/* App breakdown (expanded) */}
             {isExpanded && (
-              <View style={styles.appBreakdown}>
+              <View style={styles.breakdown}>
                 {appEntries.length === 0 ? (
                   <Text style={styles.noApps}>No app breakdown available.</Text>
                 ) : (
                   appEntries.map(([app, secs]) => {
-                    const pct = entry.totalSeconds > 0 ? secs / entry.totalSeconds : 0;
+                    const appPct = entry.totalSeconds > 0 ? secs / entry.totalSeconds : 0;
                     return (
                       <View key={app} style={styles.appRow}>
                         <View style={styles.appMeta}>
                           <Text style={styles.appName}>{app}</Text>
-                          <Text style={styles.appTime}>{formatDuration(secs)}</Text>
+                          <Text style={styles.appTime}>{fmt(secs)}</Text>
                         </View>
-                        <View style={styles.barTrack}>
-                          <View
-                            style={[
-                              styles.bar,
-                              { width: `${Math.round(pct * 100)}%` as any },
-                            ]}
-                          />
+                        <View style={styles.appBarTrack}>
+                          <View style={[styles.appBar, { width: `${Math.round(appPct * 100)}%` as any }]} />
                         </View>
                       </View>
                     );
@@ -238,9 +234,7 @@ export default function LeaderboardCard({
 
       {compact && entries.length > 3 && (
         <View style={styles.moreRow}>
-          <Text style={styles.moreHint}>
-            +{entries.length - 3} more · see Friends tab
-          </Text>
+          <Text style={styles.moreHint}>+{entries.length - 3} more · see Friends tab</Text>
         </View>
       )}
     </View>
@@ -254,46 +248,30 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     marginBottom: spacing.lg,
   },
-  // When attached below a group row, remove top radius so they visually connect
-  cardNoTop: {
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
-    marginTop: 1,
-    marginBottom: 0,
+  innerWrap: {
+    overflow: "hidden",
   },
-  header: {
+  summaryRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
+    paddingVertical: 10,
   },
-  subHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  groupName: {
-    fontSize: fontSize.title,
-    fontWeight: "700",
-    color: colors.textPrimary,
-    letterSpacing: -0.3,
-  },
-  subtitle: {
+  summaryText: {
     fontSize: fontSize.small,
     color: colors.textTertiary,
+    fontWeight: "500",
   },
-  myRankBadge: {
-    backgroundColor: colors.surface2,
-    borderRadius: 12,
-    paddingHorizontal: spacing.sm,
+  myBadge: {
+    backgroundColor: `${colors.accentPrimary}20`,
+    borderRadius: 10,
+    paddingHorizontal: 10,
     paddingVertical: 3,
   },
-  myRankText: {
+  myBadgeText: {
     fontSize: fontSize.small,
-    color: colors.accentSecondary,
+    color: colors.accentPrimary,
     fontWeight: "600",
   },
   divider: {
@@ -302,18 +280,18 @@ const styles = StyleSheet.create({
   },
   rowDivider: {
     height: 1,
-    backgroundColor: colors.surface2,
+    backgroundColor: `${colors.border}60`,
     marginHorizontal: spacing.md,
   },
   row: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: spacing.md,
-    paddingVertical: 11,
+    paddingVertical: 12,
     gap: spacing.sm,
   },
   rowMe: {
-    backgroundColor: `${colors.accentPrimary}14`,
+    backgroundColor: `${colors.accentPrimary}10`,
   },
   rank: {
     width: 30,
@@ -327,33 +305,62 @@ const styles = StyleSheet.create({
   },
   nameBlock: {
     flex: 1,
+    gap: 5,
+  },
+  nameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
   name: {
     fontSize: fontSize.body,
     fontWeight: "600",
     color: colors.textPrimary,
+    flexShrink: 1,
   },
   nameMe: {
     color: colors.accentPrimary,
   },
   youTag: {
-    fontSize: fontSize.small,
+    fontSize: fontSize.tiny,
     color: colors.accentSecondary,
     fontWeight: "400",
   },
-  sessions: {
-    fontSize: fontSize.tiny,
-    color: colors.textTertiary,
-    marginTop: 2,
+  liveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: colors.success,
+  },
+  barTrack: {
+    height: 3,
+    backgroundColor: colors.surface2,
+    borderRadius: 2,
+    overflow: "hidden",
+  },
+  bar: {
+    height: "100%",
+    borderRadius: 2,
   },
   rightBlock: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 8,
+  },
+  streakBadge: {
+    backgroundColor: colors.surface2,
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  streakText: {
+    fontSize: fontSize.tiny,
+    fontWeight: "600",
+    color: colors.textSecondary,
   },
   time: {
     fontSize: fontSize.body,
-    fontWeight: "600",
-    color: colors.textPrimary,
+    fontWeight: "700",
     letterSpacing: -0.3,
     minWidth: 44,
     textAlign: "right",
@@ -361,12 +368,11 @@ const styles = StyleSheet.create({
   timeMe: {
     color: colors.accentPrimary,
   },
-  appBreakdown: {
+  breakdown: {
     backgroundColor: colors.surface2,
     paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.sm,
-    gap: 8,
+    paddingVertical: spacing.sm,
+    gap: 10,
   },
   appRow: { gap: 4 },
   appMeta: {
@@ -382,13 +388,13 @@ const styles = StyleSheet.create({
     fontSize: fontSize.small,
     color: colors.textTertiary,
   },
-  barTrack: {
+  appBarTrack: {
     height: 3,
     backgroundColor: colors.border,
     borderRadius: 2,
     overflow: "hidden",
   },
-  bar: {
+  appBar: {
     height: "100%",
     backgroundColor: colors.accentMuted,
     borderRadius: 2,
@@ -402,6 +408,7 @@ const styles = StyleSheet.create({
     color: colors.textTertiary,
     textAlign: "center",
     padding: spacing.md,
+    lineHeight: 18,
   },
   moreRow: {
     borderTopWidth: 1,

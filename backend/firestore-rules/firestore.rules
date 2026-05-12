@@ -50,6 +50,32 @@ service cloud.firestore {
       }
     }
 
+    // ── activeSessions ────────────────────────────────────────────────────────
+    // Written by backend only. Any authenticated user can read — the live feed
+    // requires friends to listen to each other's sessions in real time, and the
+    // data is non-sensitive (app name + open time, no private content).
+    match /activeSessions/{doc} {
+      allow read: if isAuthed();
+      allow write: if false;
+    }
+
+    // ── shameQueue ────────────────────────────────────────────────────────────
+    // Written by backend only. Any authenticated user can read — shames are
+    // social accountability events visible to all group members, not just the
+    // sender/receiver.
+    match /shameQueue/{doc} {
+      allow read: if isAuthed();
+      allow write: if false;
+    }
+
+    // ── shameEvents ───────────────────────────────────────────────────────────
+    // Audit log written by backend only. Any authenticated user can read (used
+    // for awards/leaderboard). No client writes permitted.
+    match /shameEvents/{doc} {
+      allow read: if isAuthed();
+      allow write: if false;
+    }
+
     // ── Group documents ───────────────────────────────────────────────────────
 
     match /groups/{groupId} {

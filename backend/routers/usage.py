@@ -110,6 +110,9 @@ async def record_usage(
 
     open_time = matching_open.to_dict()["eventTime"]
 
+    # Delete the matched open event so it can never be reused by a future close.
+    matching_open.reference.delete()
+
     # Fetch recent sessions by appName only (single-field — no composite index needed).
     previous_close_time: Optional[str] = None
     session_docs = list(
@@ -143,6 +146,13 @@ async def record_usage(
         duration_seconds=session["durationSeconds"],
         daily_total_seconds=daily_total,
     )
+
+    # Update streak
+    from routers.social import update_streak
+    try:
+        update_streak(uid)
+    except Exception:
+        pass  # non-critical
 
     return {"status": "ok", "recorded": "close", "durationSeconds": session["durationSeconds"]}
 
