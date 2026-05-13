@@ -72,18 +72,13 @@ def _parse_time(t) -> datetime:
 # ══════════════════════════════════════════════════════════════════════
 
 @router.get("/api/gateway")
-def gateway(
-    userId: str = Query(...),
-    _: None = Depends(_check_shortcut_key),
-):
+def gateway(userId: str = Query(...)):
     """
     Called by Shortcuts before opening any tracked app.
-    Checks global lock and pending shames. No app param needed.
-    Returns { action: "allow" | "block" | "shame_pending", message? }
+    Checks global lock only. Returns allow or block with unlock time.
     """
     now = datetime.now(timezone.utc)
 
-    # ── 1. Check global lock ──
     gw_doc = (
         db.collection("users").document(userId)
         .collection("gatewayState").document("current").get()
@@ -95,33 +90,8 @@ def gateway(
             if locked_until > now:
                 until_str = locked_until.strftime("%-I:%M %p")
                 return {"action": "block", "allowed": False, "message": f"Locked until {until_str}"}
-            else:
-                # Lock expired — clear it
-                gw_doc.reference.update({"locked": False})
-                db.collection("users").document(userId).set(
-                    {"locked": False, "lockedUntil": None}, merge=True
-                )
-
-    # ── 2. Check shame queue ──
-    shame_docs = list(
-        db.collection("shameQueue")
-        .where(filter=FieldFilter("toUserId", "==", userId))
-        .where(filter=FieldFilter("watched", "==", False))
-        .limit(1)
-        .stream()
-    )
-    if shame_docs:
-        shame = shame_docs[0].to_dict()
-        return {
-            "action": "shame_pending",
-            "allowed": False,
-            "shameId": shame_docs[0].id,
-            "from": shame.get("fromName", "A friend"),
-            "type": shame.get("type", "quick"),
-            "reaction": shame.get("reaction"),
-            "videoUrl": shame.get("videoUrl"),
-            "message": f"{shame.get('fromName', 'A friend')} shamed you",
-        }
+            # Lock expired — clear it
+            gw_doc.reference.update({"locked": False})
 
     return {"action": "allow", "allowed": True}
 
