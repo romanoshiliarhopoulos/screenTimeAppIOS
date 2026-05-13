@@ -170,7 +170,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFInput": _action_output_attachment("Gateway Response", gateway_uuid),
             },
         },
-        # 5 — If Block Message has any value  (WFCondition 8 = has any value)
+        # 5 — If Block Message begins with "Locked"
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
             "WFWorkflowActionParameters": {
@@ -178,6 +178,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "GroupingIdentifier": if_uuid,
                 "WFControlFlowMode": 0,
                 "WFCondition": 8,
+                "WFConditionalActionString": "Locked",
                 "WFInput": {
                     "Type": "Variable",
                     "Variable": _action_output_attachment("Block Message", message_val_uuid),
