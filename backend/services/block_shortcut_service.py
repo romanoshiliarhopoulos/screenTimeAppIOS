@@ -103,8 +103,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
     date_uuid        = str(uuid.uuid4()).upper()
     format_uuid      = str(uuid.uuid4()).upper()
     userid_uuid      = str(uuid.uuid4()).upper()
-    gateway_uuid     = str(uuid.uuid4()).upper()
-    message_val_uuid = str(uuid.uuid4()).upper()
+    message_val_uuid = str(uuid.uuid4()).upper()  # gateway response = Block Message directly
     record_uuid      = str(uuid.uuid4()).upper()
     if_uuid          = str(uuid.uuid4()).upper()
 
@@ -150,42 +149,31 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFTextActionText": "",
             },
         },
-        # 3 — GET /api/gateway
+        # 3 — GET /api/gateway → plain text message if locked, 204 if allowed
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
             "WFWorkflowActionParameters": {
-                "UUID": gateway_uuid,
-                "CustomOutputName": "Gateway Response",
+                "UUID": message_val_uuid,
+                "CustomOutputName": "Block Message",
                 "WFHTTPMethod": "GET",
                 "WFURL": gateway_url,
             },
         },
-        # 4 — Get Dict Value "message" → Block Message (null when allowed)
-        {
-            "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
-            "WFWorkflowActionParameters": {
-                "UUID": message_val_uuid,
-                "CustomOutputName": "Block Message",
-                "WFDictionaryKey": "message",
-                "WFInput": _action_output_attachment("Gateway Response", gateway_uuid),
-            },
-        },
-        # 5 — If Block Message begins with "Locked"
+        # 4 — If Block Message has any value  (WFCondition 1002 = has any value)
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
             "WFWorkflowActionParameters": {
                 "UUID": if_uuid,
                 "GroupingIdentifier": if_uuid,
                 "WFControlFlowMode": 0,
-                "WFCondition": 8,
-                "WFConditionalActionString": "Locked",
+                "WFCondition": 1002,
                 "WFInput": {
                     "Type": "Variable",
                     "Variable": _action_output_attachment("Block Message", message_val_uuid),
                 },
             },
         },
-        # 6 — Show Alert with Block Message
+        # 5 — Show Alert with Block Message
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.alert",
             "WFWorkflowActionParameters": {
@@ -206,7 +194,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFAlertActionCancelButtonShown": False,
             },
         },
-        # 7 — Otherwise (no message = allowed)
+        # 6 — Otherwise (204 = allowed, no value)
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
             "WFWorkflowActionParameters": {
@@ -214,7 +202,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFControlFlowMode": 1,
             },
         },
-        # 8 — POST open event
+        # 7 — POST open event
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
             "WFWorkflowActionParameters": {
@@ -223,7 +211,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFURL": record_url,
             },
         },
-        # 9 — Open the real app
+        # 8 — Open the real app
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.openapp",
             "WFWorkflowActionParameters": {
@@ -235,7 +223,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 },
             },
         },
-        # 10 — End If
+        # 9 — End If
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
             "WFWorkflowActionParameters": {

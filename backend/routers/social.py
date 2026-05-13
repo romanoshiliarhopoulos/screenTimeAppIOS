@@ -75,8 +75,11 @@ def _parse_time(t) -> datetime:
 def gateway(userId: str = Query(...)):
     """
     Called by Shortcuts before opening any tracked app.
-    Checks global lock only. Returns allow or block with unlock time.
+    Returns plain text message when locked (Shortcut sees "has any value"),
+    or 204 No Content when allowed (Shortcut sees "does not have any value").
     """
+    from fastapi.responses import Response as RawResponse, PlainTextResponse
+
     now = datetime.now(timezone.utc)
 
     gw_doc = (
@@ -89,11 +92,11 @@ def gateway(userId: str = Query(...)):
             locked_until = _parse_time(gw.get("lockedUntil", ""))
             if locked_until > now:
                 until_str = locked_until.strftime("%-I:%M %p")
-                return {"action": "block", "allowed": False, "message": f"Locked until {until_str}"}
+                return PlainTextResponse(f"Locked until {until_str}")
             # Lock expired — clear it
             gw_doc.reference.update({"locked": False})
 
-    return {"action": "allow", "allowed": True}
+    return RawResponse(status_code=204)
 
 
 # ══════════════════════════════════════════════════════════════════════
