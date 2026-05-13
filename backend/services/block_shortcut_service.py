@@ -159,14 +159,14 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFURL": gateway_url,
             },
         },
-        # 4 — If Block Message has any value  (WFCondition 1002 = has any value)
+        # 4 — If Block Message has any value  (WFCondition 101 = has any value)
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
             "WFWorkflowActionParameters": {
                 "UUID": if_uuid,
                 "GroupingIdentifier": if_uuid,
                 "WFControlFlowMode": 0,
-                "WFCondition": 1002,
+                "WFCondition": 101,
                 "WFInput": {
                     "Type": "Variable",
                     "Variable": _action_output_attachment("Block Message", message_val_uuid),
@@ -215,6 +215,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.openapp",
             "WFWorkflowActionParameters": {
+                "UUID": str(uuid.uuid4()).upper(),
                 "WFAppIdentifier": bundle_id,
                 "WFSelectedApp": {
                     "BundleIdentifier": bundle_id,
@@ -227,6 +228,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
             "WFWorkflowActionParameters": {
+                "UUID": str(uuid.uuid4()).upper(),
                 "GroupingIdentifier": if_uuid,
                 "WFControlFlowMode": 2,
             },
@@ -333,8 +335,9 @@ def build_block_shortcut_plist(
         data = _build_block_close_shortcut(app_name, api_url)
 
     data.update({
-        "WFWorkflowClientVersion": "1300.0.0.0.0",
+        "WFWorkflowClientVersion": "4042.0.2.2",
         "WFWorkflowHasShortcutInputVariables": False,
+        "WFWorkflowHasOutputFallback": False,
         "WFWorkflowIcon": {
             "WFWorkflowIconStartColor": 946986751,
             "WFWorkflowIconGlyphNumber": 59511,
@@ -343,7 +346,8 @@ def build_block_shortcut_plist(
         "WFWorkflowMinimumClientVersion": 900,
         "WFWorkflowMinimumClientVersionString": "900",
         "WFWorkflowOutputContentItemClasses": [],
-        "WFWorkflowTypes": [],
+        "WFQuickActionSurfaces": [],
+        "WFWorkflowTypes": ["Watch"],
     })
 
     return plistlib.dumps(data, fmt=plistlib.FMT_XML)
