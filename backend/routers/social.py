@@ -57,12 +57,13 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _parse_time(t: str) -> datetime:
-    """Parse ISO timestamp (with or without Z) to datetime."""
-    t = t.replace("Z", "+00:00")
+def _parse_time(t) -> datetime:
+    """Parse ISO timestamp string or Firestore Timestamp to aware datetime."""
+    if isinstance(t, datetime):
+        return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
     try:
-        return datetime.fromisoformat(t)
-    except ValueError:
+        return datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
         return datetime.now(timezone.utc)
 
 
@@ -93,12 +94,7 @@ def gateway(
             locked_until = _parse_time(gw.get("lockedUntil", ""))
             if locked_until > now:
                 until_str = locked_until.strftime("%-I:%M %p")
-                locker_name = gw.get("lockedByName", "")
-                if locker_name and locker_name != _get_display_name(userId):
-                    message = f"Locked by {locker_name} until {until_str}"
-                else:
-                    message = f"Locked until {until_str}"
-                return {"action": "block", "allowed": False, "message": message}
+                return {"action": "block", "allowed": False, "message": f"Locked until {until_str}"}
             else:
                 # Lock expired — clear it
                 gw_doc.reference.update({"locked": False})
