@@ -104,7 +104,6 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
     format_uuid      = str(uuid.uuid4()).upper()
     userid_uuid      = str(uuid.uuid4()).upper()
     gateway_uuid     = str(uuid.uuid4()).upper()
-    action_val_uuid  = str(uuid.uuid4()).upper()
     message_val_uuid = str(uuid.uuid4()).upper()
     record_uuid      = str(uuid.uuid4()).upper()
     if_uuid          = str(uuid.uuid4()).upper()
@@ -161,32 +160,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFURL": gateway_url,
             },
         },
-        # 4 — Get Dict Value "action" → Action Value
-        {
-            "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
-            "WFWorkflowActionParameters": {
-                "UUID": action_val_uuid,
-                "CustomOutputName": "Action Value",
-                "WFDictionaryKey": "action",
-                "WFInput": _action_output_attachment("Gateway Response", gateway_uuid),
-            },
-        },
-        # 5 — If Action Value does-not-contain "allow"  (WFCondition 100 = does not contain)
-        {
-            "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
-            "WFWorkflowActionParameters": {
-                "UUID": if_uuid,
-                "GroupingIdentifier": if_uuid,
-                "WFControlFlowMode": 0,
-                "WFCondition": 100,
-                "WFConditionalActionString": "allow",
-                "WFInput": {
-                    "Type": "Variable",
-                    "Variable": _action_output_attachment("Action Value", action_val_uuid),
-                },
-            },
-        },
-        # 6 — Get Dict Value "message"
+        # 4 — Get Dict Value "message" → Block Message (null when allowed)
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.getvalueforkey",
             "WFWorkflowActionParameters": {
@@ -196,7 +170,21 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFInput": _action_output_attachment("Gateway Response", gateway_uuid),
             },
         },
-        # 7 — Show Alert
+        # 5 — If Block Message has any value  (WFCondition 8 = has any value)
+        {
+            "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
+            "WFWorkflowActionParameters": {
+                "UUID": if_uuid,
+                "GroupingIdentifier": if_uuid,
+                "WFControlFlowMode": 0,
+                "WFCondition": 8,
+                "WFInput": {
+                    "Type": "Variable",
+                    "Variable": _action_output_attachment("Block Message", message_val_uuid),
+                },
+            },
+        },
+        # 6 — Show Alert with Block Message
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.alert",
             "WFWorkflowActionParameters": {
@@ -217,7 +205,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFAlertActionCancelButtonShown": False,
             },
         },
-        # 8 — Otherwise (allowed)
+        # 7 — Otherwise (no message = allowed)
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
             "WFWorkflowActionParameters": {
@@ -225,7 +213,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFControlFlowMode": 1,
             },
         },
-        # 9 — POST open event
+        # 8 — POST open event
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
             "WFWorkflowActionParameters": {
@@ -234,7 +222,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFURL": record_url,
             },
         },
-        # 10 — Open the real app
+        # 9 — Open the real app
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.openapp",
             "WFWorkflowActionParameters": {
@@ -246,7 +234,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 },
             },
         },
-        # 11 — End If
+        # 10 — End If
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.conditional",
             "WFWorkflowActionParameters": {
