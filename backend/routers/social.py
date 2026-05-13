@@ -73,51 +73,40 @@ def _parse_time(t: str) -> datetime:
 @router.get("/api/gateway")
 def gateway(
     userId: str = Query(...),
-    app: str = Query(...),
-    eventTime: Optional[str] = Query(None),
     _: None = Depends(_check_shortcut_key),
 ):
     """
-    The Shortcut calls this before opening any tracked app.
-    Returns { action, ...params } to control what happens.
-    Decision priority: shame_pending > block (lock) > block (quiet hours) > delay > allow.
+    Called by Shortcuts before opening any tracked app.
+    Checks global lock and pending shames. No app param needed.
+    Returns { action: "allow" | "block" | "shame_pending", message? }
     """
     now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
-    event_time = eventTime if eventTime else now_iso
 
-    # ── 0. Check blockedApps (simple boolean block set from the app) ──
-    blocked_doc = (
+    # ── 1. Check global lock ──
+    gw_doc = (
         db.collection("users").document(userId)
-        .collection("blockedApps").document(app).get()
+        .collection("gatewayState").document("current").get()
     )
-    if blocked_doc.exists:
-        bd = blocked_doc.to_dict()
-        if bd.get("blocked"):
-            blocked_until = bd.get("blockedUntil")
-            if blocked_until is None:
-                message = f"{app} is blocked"
-            else:
-                if hasattr(blocked_until, "tzinfo"):
-                    if blocked_until.tzinfo is None:
-                        from datetime import timezone as _tz
-                        blocked_until = blocked_until.replace(tzinfo=_tz.utc)
-                if blocked_until > now:
-                    until_str = blocked_until.strftime("%-I:%M %p")
-                    message = f"{app} is blocked until {until_str}"
+    if gw_doc.exists:
+        gw = gw_doc.to_dict()
+        if gw.get("locked"):
+            locked_until = _parse_time(gw.get("lockedUntil", ""))
+            if locked_until > now:
+                until_str = locked_until.strftime("%-I:%M %p")
+                locker_name = gw.get("lockedByName", "")
+                if locker_name and locker_name != _get_display_name(userId):
+                    message = f"Locked by {locker_name} until {until_str}"
                 else:
-                    # Block expired — clear it and fall through
-                    blocked_doc.reference.update({"blocked": False})
-                    message = None
+                    message = f"Locked until {until_str}"
+                return {"action": "block", "allowed": False, "message": message}
+            else:
+                # Lock expired — clear it
+                gw_doc.reference.update({"locked": False})
+                db.collection("users").document(userId).set(
+                    {"locked": False, "lockedUntil": None}, merge=True
+                )
 
-            if message:
-                return {
-                    "action": "block",
-                    "allowed": False,
-                    "message": message,
-                }
-
-    # ── 1. Check shame queue ──
+    # ── 2. Check shame queue ──
     shame_docs = list(
         db.collection("shameQueue")
         .where(filter=FieldFilter("toUserId", "==", userId))
@@ -138,169 +127,7 @@ def gateway(
             "message": f"{shame.get('fromName', 'A friend')} shamed you",
         }
 
-    # ── 2. Check friend-triggered lock ──
-    gw_doc = (
-        db.collection("users").document(userId)
-        .collection("gatewayState").document("current").get()
-    )
-    if gw_doc.exists:
-        gw = gw_doc.to_dict()
-        if gw.get("locked"):
-            locked_until = _parse_time(gw.get("lockedUntil", ""))
-            if locked_until > now:
-                remaining = int((locked_until - now).total_seconds())
-                return {
-                    "action": "block",
-                    "allowed": False,
-                    "seconds": remaining,
-                    "lockedBy": gw.get("lockedBy", "A friend"),
-                    "message": f"{gw.get('lockedByName', 'A friend')} locked you out",
-                }
-            else:
-                # Lock expired — clear it
-                db.collection("users").document(userId).collection(
-                    "gatewayState"
-                ).document("current").update({"locked": False})
-                db.collection("users").document(userId).set(
-                    {"locked": False, "lockedUntil": None}, merge=True
-                )
-
-    # ── 3. Check ghost mode ──
-    ghost_doc = (
-        db.collection("users").document(userId)
-        .collection("gatewayState").document("ghost").get()
-    )
-    ghost_active = False
-    if ghost_doc.exists:
-        gd = ghost_doc.to_dict()
-        ghost_until = _parse_time(gd.get("until", ""))
-        if ghost_until > now:
-            ghost_active = True
-
-    # ── 4. Load user settings ──
-    settings_doc = (
-        db.collection("users").document(userId)
-        .collection("notificationSettings").document("config").get()
-    )
-    settings = settings_doc.to_dict() if settings_doc.exists else {}
-
-    # ── 5. Check quiet hours ──
-    quiet_start = settings.get("quietHoursStart")
-    quiet_end = settings.get("quietHoursEnd")
-    if quiet_start and quiet_end:
-        try:
-            h_now, m_now = now.hour, now.minute
-            h_start, m_start = map(int, quiet_start.split(":"))
-            h_end, m_end = map(int, quiet_end.split(":"))
-            now_mins = h_now * 60 + m_now
-            start_mins = h_start * 60 + m_start
-            end_mins = h_end * 60 + m_end
-            if start_mins > end_mins:
-                # Wraps midnight
-                in_quiet = now_mins >= start_mins or now_mins < end_mins
-            else:
-                in_quiet = start_mins <= now_mins < end_mins
-            if in_quiet:
-                return {
-                    "action": "block",
-                    "allowed": False,
-                    "message": f"Quiet hours until {quiet_end}",
-                }
-        except (ValueError, AttributeError):
-            pass
-
-    # ── 6. Check daily open limits / delay escalation ──
-    today = _today_str()
-    summary_doc = (
-        db.collection("users").document(userId)
-        .collection("dailySummaries").document(today).get()
-    )
-    today_data = summary_doc.to_dict() if summary_doc.exists else {}
-
-    # Count today's opens for this app from openCounts
-    open_counts = today_data.get("openCounts", {})
-    opens_today = open_counts.get(app, 0)
-
-    # Increment open count
-    new_count = opens_today + 1
-    open_counts[app] = new_count
-    if summary_doc.exists:
-        db.collection("users").document(userId).collection(
-            "dailySummaries"
-        ).document(today).update({"openCounts": open_counts})
-    else:
-        db.collection("users").document(userId).collection(
-            "dailySummaries"
-        ).document(today).set({
-            "date": today,
-            "totalSeconds": 0,
-            "sessionCount": 0,
-            "byApp": {},
-            "maxSessionSeconds": 0,
-            "openCounts": open_counts,
-        })
-
-    # Delay escalation based on opens today
-    delay = 0
-    message = ""
-    if new_count > 16:
-        delay = 60
-        message = f"You've opened {app} {new_count} times today"
-        # Auto wall of shame
-        _add_wall_of_shame(userId, "excessive_opens", {
-            "appName": app,
-            "openCount": new_count,
-            "date": today,
-        })
-    elif new_count > 12:
-        delay = 60
-        message = f"You've opened {app} {new_count} times today"
-    elif new_count > 8:
-        delay = 30
-        message = f"Opening #{new_count} today"
-    elif new_count > 5:
-        delay = 15
-        message = f"Opening #{new_count} today"
-
-    # Also check daily time limit
-    daily_limits = settings.get("dailyLimits", {})
-    app_limit = daily_limits.get(app, {})
-    time_limit_secs = app_limit.get("minutes", 0) * 60 if isinstance(app_limit, dict) else 0
-    if time_limit_secs > 0:
-        app_seconds = today_data.get("byApp", {}).get(app, 0)
-        if app_seconds >= time_limit_secs:
-            delay = max(delay, 60)
-            message = f"You've exceeded your {app} time limit"
-
-    if delay > 0:
-        return {
-            "action": "delay",
-            "allowed": False,
-            "seconds": delay,
-            "opensToday": new_count,
-            "message": message,
-        }
-
-    # ── 7. Allow — record the open event + start live session ──
-    events_ref = db.collection("users").document(userId).collection("events")
-    events_ref.add({
-        "appName": app,
-        "eventType": "open",
-        "eventTime": event_time,
-        "createdAt": now_iso,
-    })
-    try:
-        from services.notification import notification_service
-        notification_service.on_session_open(
-            user_id=userId,
-            device_id="",
-            app_name=app,
-            open_time=event_time,
-        )
-    except Exception:
-        logger.warning("Failed to start live session tracking", exc_info=True)
-
-    return {"action": "allow", "allowed": True, "opensToday": new_count}
+    return {"action": "allow", "allowed": True}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -575,6 +402,19 @@ def send_sos(uid: str = Depends(get_uid)):
     })
 
     return {"status": "ok", "lockedSeconds": 900}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 4b. SELF-LOCK — user locks themselves out for 15 minutes
+# ══════════════════════════════════════════════════════════════════════
+
+@router.post("/api/self-lock")
+def self_lock(uid: str = Depends(get_uid)):
+    """Lock yourself out of all social apps for 15 minutes."""
+    name = _get_display_name(uid)
+    _lock_user(uid, uid, name, 900)
+    until = (datetime.now(timezone.utc) + timedelta(seconds=900)).isoformat()
+    return {"status": "ok", "lockedUntil": until}
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -111,7 +111,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
 
     gateway_url = _token_url(
         base=f"{api_url}/api/gateway?userId=",
-        tokens=[("User ID", userid_uuid, f"&app={app_name}")],
+        tokens=[("User ID", userid_uuid, "")],
     )
 
     record_url = _token_url(
