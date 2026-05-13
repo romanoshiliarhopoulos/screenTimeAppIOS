@@ -1,34 +1,35 @@
 # iOS Shortcuts Integration
 
-This guide explains how iOS Shortcuts act as the **gatekeeper** for tracked apps — every app open goes through the backend first, and the app only launches if allowed.
+This guide explains how iOS Shortcuts act as the **gatekeeper** for tracked apps — every app open goes through the backend first, and the app only launches if it isn't blocked.
 
 ## Architecture: Shortcut-as-Gatekeeper
 
-Instead of tracking app usage passively, each tracked app's home screen icon is **replaced by a Shortcut** that controls access. The real app is hidden; the Shortcut decides whether to open it.
+Each tracked app's home screen icon is **replaced by a Shortcut** that controls access. The real app is hidden; the Shortcut checks the backend before deciding whether to open it.
 
 ```
 User taps "Instagram" (actually a Shortcut)
   → Shortcut calls GET /api/gateway?userId=X&app=Instagram
-  → Backend checks: shame → lock → quiet hours → daily limits
+  → Backend reads users/{userId}/blockedApps/Instagram
 
-  ✅ Allowed:
-    → Backend records the open event
+  ✅ Not blocked:
+    → Shortcut POSTs open event to backend
     → Shortcut opens the real Instagram app
 
   🔒 Blocked:
-    → Shortcut shows alert: "Locked out by Alex for 2 more minutes"
+    → Shortcut shows: "Instagram is blocked"
+    → Shows timer (blocked since / unblocks at)
     → Shortcut ends — app NEVER opens
 
 User eventually closes Instagram
   → iOS Automation fires "When Instagram is closed"
-  → Close Shortcut records the close event
+  → Close Shortcut POSTs close event to backend
 ```
 
 ### Two Shortcuts Per App
 
 | Shortcut | Type | Trigger | What It Does |
 |----------|------|---------|-------------|
-| **Instagram** (launcher) | Home screen icon | User taps it | Calls gateway → opens app if allowed |
+| **Instagram** (launcher) | Home screen icon | User taps it | Checks gateway → opens app if not blocked |
 | **Track Instagram Close** | Background automation | iOS "When App Is Closed" | Records close event |
 
 ### Why This Works
@@ -36,31 +37,99 @@ User eventually closes Instagram
 - The Shortcut runs **before** the app opens — if blocked, the app never launches
 - Same technique used by commercial apps like "one sec"
 - No native code, no MDM, no special entitlements required
-- Users control which apps are gated
+- The `blocked` state is toggled from within the React Native app
 
 ---
 
-## What the Gateway Controls
+## Firestore Schema
 
-The gateway endpoint (`GET /api/gateway`) is the single decision point. It checks, in priority order:
+Each app's blocked state lives under the user's document:
 
-| Check | Result if triggered |
-|-------|-------------------|
-| **Pending shame** | Block — shows shame message |
-| **Friend-triggered lock** | Block — shows who locked you and remaining time |
-| **Quiet hours** | Block — shows "Quiet hours until HH:MM" |
-| **Daily open limit** | Delay/block — escalating friction based on opens today |
-| **Daily time limit** | Block — shows "Time limit exceeded for [app]" |
-| None triggered | **Allow** — records open event, opens the app |
+```
+users/{userId}/blockedApps/{appName}
+  blocked: boolean
+  blockedUntil: timestamp | null   // null = blocked indefinitely
+  blockedAt: timestamp             // when the block was set
+```
 
-### Lock Triggers
+The gateway endpoint reads this document and returns the current state. If `blockedUntil` is set and has passed, the gateway treats the app as unblocked (and clears the flag).
 
-| Trigger | Duration | How |
-|---------|----------|-----|
-| Quick shame from friend | 120 seconds | Automatic on any shame |
-| Emergency shame | 300 seconds (5 min) | `reaction: "emergency"` |
-| Friend lock (`POST /api/lock/{id}`) | 60s default, max 300s | Manual from app |
-| SOS self-lock | 900 seconds (15 min) | User calls `POST /api/sos` |
+---
+
+## Backend Endpoints
+
+### Gateway (called by launcher shortcut)
+
+```
+GET /api/gateway?userId={userId}&app={appName}
+Headers: x-api-key: {SHORTCUT_API_KEY}
+
+Response (not blocked):
+{ "action": "allow" }
+
+Response (blocked):
+{ "action": "block", "blockedAt": "2026-05-12T10:00:00Z", "blockedUntil": "2026-05-12T14:00:00Z" }
+// blockedUntil is null if blocked indefinitely
+```
+
+When the gateway allows, it also records the open event — no second API call needed from the Shortcut.
+
+### Record Close (called by close shortcut)
+
+```
+POST /api/usage/record
+Body: { "userId": "...", "appName": "...", "eventType": "close", "eventTime": "ISO8601" }
+Headers: x-api-key: {SHORTCUT_API_KEY}
+
+Response:
+{ "status": "ok", "durationSeconds": 342 }
+```
+
+### Toggle Block (called from the React Native app)
+
+```
+POST /api/block
+Body: { "userId": "...", "appName": "...", "blocked": true, "blockedUntil": "ISO8601 or null" }
+Headers: x-api-key: {APP_API_KEY}
+
+Response:
+{ "status": "ok" }
+```
+
+---
+
+## Shortcut Internals
+
+### Launcher Shortcut (Open)
+
+Actions:
+
+```
+0. Text: userId (stored at install via Import Question)
+1. GET /api/gateway?userId={userId}&app={appName}
+2. Get Dictionary Value: "action"
+3. If "action" Is "block":
+     Get Dictionary Value: "blockedUntil"
+     // If blockedUntil is set, compute remaining time and show countdown
+     // Otherwise show "Instagram is blocked"
+     Show Alert: "Instagram is blocked\nUnblocks at {time}" (or "Blocked indefinitely")
+   Otherwise:
+     Open App: {bundleId}
+   End If
+```
+
+The gateway records the open event server-side when it allows — no second call needed.
+
+### Close Shortcut
+
+Actions:
+
+```
+0. Get Current Date
+1. Format Date → ISO 8601
+2. Text: userId
+3. POST /api/usage/record { userId, appName, eventType: "close", eventTime }
+```
 
 ---
 
@@ -108,7 +177,7 @@ Download the launcher (open) and close shortcuts from the app's setup screen.
 1. Long-press the **real** app icon on your home screen
 2. Tap **Remove from Home Screen** (NOT "Delete App")
 3. The app is still installed — just not on the home screen
-4. You can always find it via App Library or Spotlight search
+4. You can still find it via App Library or Spotlight search
 
 ### Step 4: Set Up Close Automation
 
@@ -122,40 +191,7 @@ Download the launcher (open) and close shortcuts from the app's setup screen.
 
 ---
 
-## Shortcut Internals
-
-### Launcher Shortcut (Open)
-
-Actions:
-
-```
-0. Get Current Date
-1. Format Date → ISO 8601
-2. Text: userId (filled by Import Question at install)
-3. GET /api/gateway?userId={userId}&app={appName}&eventTime={timestamp}
-4. Get Dictionary Value: "action"
-5. If "action" Is Not "allow":
-     Get Dictionary Value: "message" (from step 3 response)
-     Show Alert: {message}
-   Otherwise:
-     Open App: {bundleId}
-   End If
-```
-
-The gateway records the open event server-side when it allows, so no second API call is needed.
-
-### Close Shortcut
-
-Actions (unchanged from original):
-
-```
-0. Get Current Date
-1. Format Date → ISO 8601
-2. Text: userId
-3. POST /api/usage/record?userId={userId}&appName={appName}&eventType=close&eventTime={timestamp}
-```
-
-### Supported Apps + Bundle IDs
+## Supported Apps + Bundle IDs
 
 | App | Bundle ID |
 |-----|-----------|
@@ -174,74 +210,15 @@ Actions (unchanged from original):
 
 ---
 
-## Backend Endpoints
-
-### Gateway (called by launcher shortcut)
-
-```
-GET /api/gateway?userId={userId}&app={appName}&eventTime={iso8601}
-Headers: x-api-key: {SHORTCUT_API_KEY}
-
-Response (allowed):
-{ "action": "allow", "allowed": true, "opensToday": 3 }
-
-Response (blocked):
-{ "action": "block", "allowed": false, "message": "Alex locked you out", "seconds": 120 }
-
-Response (delay):
-{ "action": "delay", "allowed": false, "message": "Opening #12 today", "seconds": 30 }
-```
-
-When the gateway allows, it also:
-- Records the open event in `users/{userId}/events`
-- Creates an active session for live presence tracking
-- Increments the daily open count
-
-### Record Usage (called by close shortcut)
-
-```
-POST /api/usage/record?userId={userId}&appName={appName}&eventType=close&eventTime={iso8601}
-Headers: x-api-key: {SHORTCUT_API_KEY}
-
-Response:
-{ "status": "ok", "durationSeconds": 342 }
-```
-
----
-
-## Generating Shortcut Files
-
-Shortcut files are pre-generated locally (requires macOS for signing) and served as static files.
-
-### Generate All Shortcuts
-
-```bash
-cd backend
-python scripts/generate_shortcuts.py
-```
-
-This produces 24 files in `backend/shortcuts/signed/`:
-- 12 launcher shortcuts (one per app)
-- 12 close shortcuts (one per app)
-
-### Regenerating
-
-Run `generate_shortcuts.py` whenever:
-- The API URL changes
-- The shortcut logic changes (gateway check, new actions)
-- A new app is added to the supported list
-
----
-
 ## Known Limitations
 
 | Limitation | Impact |
 |-----------|--------|
-| User can find the real app via App Library / Spotlight | Bypasses the gatekeeper — but requires deliberate effort |
+| User can find the real app via App Library / Spotlight | Bypasses the gatekeeper — requires deliberate effort |
 | Close automation requires "When App Is Closed" trigger | User must set this up manually (iOS restriction) |
 | Shortcut icon must be set manually | User picks the app icon when adding to home screen |
-| Unlock-to-same-app doesn't fire close | Backend uses 20-min cap heuristic for orphaned sessions |
 | No background enforcement if phone is locked/rebooted | Shortcut-based — runs on user action only |
+| Shortcut alert timer is static | iOS Shortcuts can't show a live countdown; shows target unblock time instead |
 
 ---
 
@@ -249,9 +226,8 @@ Run `generate_shortcuts.py` whenever:
 
 | Issue | Solution |
 |-------|---------|
-| Shortcut shows alert every time | Check if user is locked — verify in Firestore `gatewayState/current` |
-| App opens even when locked | User is tapping the real app, not the shortcut — hide the real app |
+| App opens even when blocked | User is tapping the real app, not the shortcut — hide the real app |
 | Close events not recording | Verify the close automation is set up and "Ask Before Running" is off |
 | "Network error" in shortcut | Check API URL is correct and backend is deployed |
 | Shortcut file won't import | Verify it's signed — run `shortcuts sign` locally |
-| Lock not expiring | Check `lockedUntil` timestamp in Firestore — may be a timezone issue |
+| Block not clearing | Check `blockedUntil` timestamp in Firestore — may be a timezone issue |

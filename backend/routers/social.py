@@ -86,6 +86,37 @@ def gateway(
     now_iso = now.isoformat()
     event_time = eventTime if eventTime else now_iso
 
+    # ── 0. Check blockedApps (simple boolean block set from the app) ──
+    blocked_doc = (
+        db.collection("users").document(userId)
+        .collection("blockedApps").document(app).get()
+    )
+    if blocked_doc.exists:
+        bd = blocked_doc.to_dict()
+        if bd.get("blocked"):
+            blocked_until = bd.get("blockedUntil")
+            if blocked_until is None:
+                message = f"{app} is blocked"
+            else:
+                if hasattr(blocked_until, "tzinfo"):
+                    if blocked_until.tzinfo is None:
+                        from datetime import timezone as _tz
+                        blocked_until = blocked_until.replace(tzinfo=_tz.utc)
+                if blocked_until > now:
+                    until_str = blocked_until.strftime("%-I:%M %p")
+                    message = f"{app} is blocked until {until_str}"
+                else:
+                    # Block expired — clear it and fall through
+                    blocked_doc.reference.update({"blocked": False})
+                    message = None
+
+            if message:
+                return {
+                    "action": "block",
+                    "allowed": False,
+                    "message": message,
+                }
+
     # ── 1. Check shame queue ──
     shame_docs = list(
         db.collection("shameQueue")
@@ -915,7 +946,10 @@ def get_wall_of_shame(uid: str = Depends(get_uid)):
 # ══════════════════════════════════════════════════════════════════════
 
 @router.get("/api/friends/live")
-def get_live_friends(uid: str = Depends(get_uid)):
+def get_live_friends(
+    uid: str = Depends(get_uid),
+    date: Optional[str] = Query(None, description="Client's local date YYYY-MM-DD"),
+):
     """
     Returns all friends with their live status, today's stats, streak info,
     and shame cooldown status.
@@ -923,8 +957,17 @@ def get_live_friends(uid: str = Depends(get_uid)):
     for activeSessions instead of 6 serial reads per friend.
     """
     now = datetime.now(timezone.utc)
-    today = _today_str()
-    yesterday_str = (now.date() - timedelta(days=1)).isoformat()
+    # Use client-provided local date if available, otherwise fall back to UTC
+    if date:
+        try:
+            today = dt_date.fromisoformat(date).isoformat()
+            yesterday_str = (dt_date.fromisoformat(date) - timedelta(days=1)).isoformat()
+        except ValueError:
+            today = _today_str()
+            yesterday_str = (now.date() - timedelta(days=1)).isoformat()
+    else:
+        today = _today_str()
+        yesterday_str = (now.date() - timedelta(days=1)).isoformat()
     _BREAK_TOLERANCE = 5
     _MIN_SCROLLING = 5
 

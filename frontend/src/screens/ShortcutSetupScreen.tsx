@@ -30,13 +30,13 @@ const APPS = [
 ];
 
 const AUTOMATION_STEPS = [
-  'Open the Shortcuts app',
-  'Go to the Automations tab',
-  'Tap "+" → New Automation → App',
-  'Select the app and check "Is Opened"',
-  'Tap Next → Add Action → Run Shortcut',
-  'Pick "Track [App] Open" → disable "Ask Before Running" → Done',
-  'Repeat, choosing "Is Closed" and "Track [App] Close"',
+  'Download both shortcuts for each app you want to block',
+  'Install the Launcher shortcut — Safari will open Shortcuts automatically',
+  'Long-press the Launcher in Shortcuts → Share → Add to Home Screen',
+  'Name it the same as the app (e.g. "Instagram") and set its icon',
+  'Long-press the real app on your home screen → Remove from Home Screen',
+  'Install the Close shortcut, then open Shortcuts → Automations tab',
+  'Tap + → App → select the app → check "Is Closed" → run the Close shortcut → disable "Ask Before Running"',
 ];
 
 type DoneKey = `${string}-${'open' | 'close'}`;
@@ -58,7 +58,7 @@ export default function ShortcutSetupScreen() {
     setLoading(key);
     try {
       const url =
-        `${API_URL}/api/shortcuts/download` +
+        `${API_URL}/api/shortcuts/block/download` +
         `?appName=${encodeURIComponent(appName)}` +
         `&event=${event}`;
       await Linking.openURL(url);
@@ -76,10 +76,11 @@ export default function ShortcutSetupScreen() {
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
     >
-      <Text style={styles.pageTitle}>Set Up Shortcuts</Text>
+      <Text style={styles.pageTitle}>Block Apps</Text>
       <Text style={styles.intro}>
-        iOS Shortcuts automatically log when you open and close tracked apps —
-        no background permissions needed.
+        iOS Shortcuts replace your app icons. Tapping one checks if the app is
+        blocked — if so, you see a message with the unlock time. No background
+        permissions needed.
       </Text>
 
       {/* User ID card */}
@@ -99,8 +100,8 @@ export default function ShortcutSetupScreen() {
       {/* Step 1 */}
       <Text style={styles.sectionHeader}>Step 1 — Download Shortcuts</Text>
       <Text style={styles.stepNote}>
-        Download both Open and Close shortcuts for each app you want to track.
-        Safari will prompt you to add them.
+        Download both Launcher and Close shortcuts for each app you want to
+        block. Safari will prompt you to add them.
       </Text>
 
       <View style={styles.card}>

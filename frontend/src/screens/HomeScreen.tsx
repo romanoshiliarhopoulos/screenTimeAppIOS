@@ -364,7 +364,12 @@ export default function HomeScreen() {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return;
       const headers = { Authorization: `Bearer ${token}` };
-      const res = await fetch(`${API_URL}/api/friends/live`, { headers });
+      const localDate = new Date();
+      const yyyy = localDate.getFullYear();
+      const mm = String(localDate.getMonth() + 1).padStart(2, "0");
+      const dd = String(localDate.getDate()).padStart(2, "0");
+      const dateParam = `${yyyy}-${mm}-${dd}`;
+      const res = await fetch(`${API_URL}/api/friends/live?date=${dateParam}`, { headers });
       if (res.ok) {
         const d = await res.json();
         const raw: FriendData[] = d.friends ?? [];
