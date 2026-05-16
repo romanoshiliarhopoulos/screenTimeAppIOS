@@ -2,10 +2,10 @@ from datetime import datetime, timezone, timedelta
 from firestore_client import db
 
 
-def update_daily_summary(uid: str, app_name: str, open_time: str, duration_seconds: int) -> int:
+def update_daily_summary(uid: str, app_name: str, open_time: str, duration_seconds: int, local_date: str | None = None) -> int:
     """Upsert the dailySummary document for the date of open_time.
     Returns the new totalSeconds for the day (used for daily cap checks)."""
-    date_str = open_time[:10]  # YYYY-MM-DD
+    date_str = local_date if local_date else open_time[:10]
     ref = (
         db.collection("users")
         .document(uid)

@@ -24,13 +24,15 @@ sync:
 ## Kill old tmux session and start a fresh expo tunnel
 restart:
 	@echo "→ Restarting expo on server..."
+	$(eval NGROK_TOKEN := $(shell ssh $(SERVER) 'grep -oP "NGROK_AUTHTOKEN=\K\S+" ~/.bashrc | tail -1'))
+	@echo "→ Got ngrok token ($(shell echo '$(NGROK_TOKEN)' | wc -c | tr -d ' ') chars)"
 	ssh $(SERVER) ' \
-		tmux kill-session -t $(SESSION) 2>/dev/null || true; \
+		tmux kill-session -t $(SESSION) >/dev/null 2>&1 || true; \
 		cd $(REMOTE)/frontend && \
 		npm install --silent && \
-		tmux new-session -d -s $(SESSION) "npx expo start --tunnel --go"; \
-		sleep 4 && \
-		tmux capture-pane -pt $(SESSION) -S -50 \
+		tmux new-session -d -s $(SESSION) "NGROK_AUTHTOKEN=$(NGROK_TOKEN) npx expo start --tunnel --go"; \
+		sleep 12 && \
+		tmux capture-pane -pt $(SESSION) -S -80 || true \
 	'
 
 ## Kill the expo tmux session on the server
@@ -41,5 +43,4 @@ kill:
 ## Tail the expo output from the server
 logs:
 	@echo "→ Attaching to expo logs on $(SERVER)..."
-	ssh $(SERVER) 'tmux capture-pane -pt $(SESSION) -S -200; \
-		tmux attach-session -t $(SESSION)'
+	ssh black 'tmux capture-pane -pt $(SESSION) -S -200 2>/dev/null; tmux attach-session -t $(SESSION) 2>/dev/null || echo "No session running."'

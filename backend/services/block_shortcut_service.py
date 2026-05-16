@@ -102,6 +102,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
 
     date_uuid        = str(uuid.uuid4()).upper()
     format_uuid      = str(uuid.uuid4()).upper()
+    localdate_uuid   = str(uuid.uuid4()).upper()
     userid_uuid      = str(uuid.uuid4()).upper()
     message_val_uuid = str(uuid.uuid4()).upper()  # gateway response = Block Message directly
     record_uuid      = str(uuid.uuid4()).upper()
@@ -115,8 +116,9 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
     record_url = _token_url(
         base=f"{api_url}/api/usage/record?userId=",
         tokens=[
-            ("User ID",        userid_uuid, f"&appName={app_name}&eventType=open&eventTime="),
-            ("Formatted Time", format_uuid,  ""),
+            ("User ID",        userid_uuid,    f"&appName={app_name}&eventType=open&eventTime="),
+            ("Formatted Time", format_uuid,    "&localDate="),
+            ("Local Date",     localdate_uuid, ""),
         ],
     )
 
@@ -140,7 +142,18 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
                 "WFInput": _action_output_attachment("Event Time", date_uuid),
             },
         },
-        # 2 — userId (Import Question fills this once at install)
+        # 2 — Format Date → yyyy-MM-dd (plain local date, no special chars in URL)
+        {
+            "WFWorkflowActionIdentifier": "is.workflow.actions.format.date",
+            "WFWorkflowActionParameters": {
+                "UUID": localdate_uuid,
+                "CustomOutputName": "Local Date",
+                "WFDateFormatStyle": "Custom",
+                "WFDateFormat": "yyyy-MM-dd",
+                "WFInput": _action_output_attachment("Event Time", date_uuid),
+            },
+        },
+        # 3 — userId (Import Question fills this once at install)
         {
             "WFWorkflowActionIdentifier": "is.workflow.actions.gettext",
             "WFWorkflowActionParameters": {
@@ -239,7 +252,7 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
         "WFWorkflowActions": actions,
         "WFWorkflowImportQuestions": [
             {
-                "ActionIndex": 2,
+                "ActionIndex": 3,
                 "Category": "Parameter",
                 "DefaultValue": "",
                 "ParameterKey": "WFTextActionText",
@@ -254,15 +267,17 @@ def _build_block_launcher_shortcut(app_name: str, api_url: str) -> dict:
 
 def _build_block_close_shortcut(app_name: str, api_url: str) -> dict:
     """Background automation: fires when the tracked app is closed."""
-    date_uuid   = str(uuid.uuid4()).upper()
-    format_uuid = str(uuid.uuid4()).upper()
-    userid_uuid = str(uuid.uuid4()).upper()
+    date_uuid      = str(uuid.uuid4()).upper()
+    format_uuid    = str(uuid.uuid4()).upper()
+    localdate_uuid = str(uuid.uuid4()).upper()
+    userid_uuid    = str(uuid.uuid4()).upper()
 
     record_url = _token_url(
         base=f"{api_url}/api/usage/record?userId=",
         tokens=[
-            ("User ID",        userid_uuid, f"&appName={app_name}&eventType=close&eventTime="),
-            ("Formatted Time", format_uuid,  ""),
+            ("User ID",        userid_uuid,    f"&appName={app_name}&eventType=close&eventTime="),
+            ("Formatted Time", format_uuid,    "&localDate="),
+            ("Local Date",     localdate_uuid, ""),
         ],
     )
 
@@ -287,7 +302,18 @@ def _build_block_close_shortcut(app_name: str, api_url: str) -> dict:
                     "WFInput": _action_output_attachment("Event Time", date_uuid),
                 },
             },
-            # 2 — userId (Import Question fills this once at install)
+            # 2 — Format Date → yyyy-MM-dd (plain local date, no special chars in URL)
+            {
+                "WFWorkflowActionIdentifier": "is.workflow.actions.format.date",
+                "WFWorkflowActionParameters": {
+                    "UUID": localdate_uuid,
+                    "CustomOutputName": "Local Date",
+                    "WFDateFormatStyle": "Custom",
+                    "WFDateFormat": "yyyy-MM-dd",
+                    "WFInput": _action_output_attachment("Event Time", date_uuid),
+                },
+            },
+            # 3 — userId (Import Question fills this once at install)
             {
                 "WFWorkflowActionIdentifier": "is.workflow.actions.gettext",
                 "WFWorkflowActionParameters": {
@@ -299,7 +325,7 @@ def _build_block_close_shortcut(app_name: str, api_url: str) -> dict:
                     },
                 },
             },
-            # 3 — POST close event
+            # 4 — POST close event
             {
                 "WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
                 "WFWorkflowActionParameters": {
@@ -310,7 +336,7 @@ def _build_block_close_shortcut(app_name: str, api_url: str) -> dict:
         ],
         "WFWorkflowImportQuestions": [
             {
-                "ActionIndex": 2,
+                "ActionIndex": 3,
                 "Category": "Parameter",
                 "DefaultValue": "",
                 "ParameterKey": "WFTextActionText",

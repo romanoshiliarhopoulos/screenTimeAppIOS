@@ -41,6 +41,7 @@ async def record_usage(
     eventType: Optional[str] = Query(None),
     eventTime: Optional[str] = Query(None),
     deviceId: Optional[str] = Query(None),
+    localDate: Optional[str] = Query(None, description="Device's local date YYYY-MM-DD"),
     _: None = Depends(_check_shortcut_key),
 ):
     """
@@ -70,6 +71,7 @@ async def record_usage(
         "appName": payload.appName,
         "eventType": payload.eventType,
         "eventTime": event_time,
+        "localDate": localDate or event_time[:10],
         "createdAt": now,
     }
     events_ref.add(event_doc)
@@ -108,7 +110,9 @@ async def record_usage(
     if not matching_open:
         return {"status": "ok", "recorded": "close", "session": None}
 
-    open_time = matching_open.to_dict()["eventTime"]
+    open_event_data = matching_open.to_dict()
+    open_time = open_event_data["eventTime"]
+    open_local_date = open_event_data.get("localDate") or localDate
 
     # Delete the matched open event so it can never be reused by a future close.
     matching_open.reference.delete()
@@ -136,7 +140,7 @@ async def record_usage(
         previous_close_time,
     )
     sessions_ref.add(session)
-    daily_total = update_daily_summary(uid, payload.appName, session["openTime"], session["durationSeconds"])
+    daily_total = update_daily_summary(uid, payload.appName, session["openTime"], session["durationSeconds"], local_date=open_local_date)
 
     # Notifications: delete activeSession, check daily cap, send close summary to friends
     notification_service.on_session_close(

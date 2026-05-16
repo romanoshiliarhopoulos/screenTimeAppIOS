@@ -145,18 +145,7 @@ async def get_leaderboard(
             .document(target_date)
             .get()
         )
-        member_doc = (
-            db.collection("groups")
-            .document(group_id)
-            .collection("members")
-            .document(member_id)
-            .get()
-        )
-        display_name = (
-            member_doc.to_dict().get("displayName", "Unknown")
-            if member_doc.exists
-            else "Unknown"
-        )
+        display_name = _get_display_name(member_id)
 
         if summary_doc.exists:
             summary = summary_doc.to_dict()
@@ -194,6 +183,13 @@ async def get_leaderboard(
             if settings_doc.exists else 3600
         )
 
+        # Block credits
+        user_doc = db.collection("users").document(member_id).get()
+        block_credits = (
+            user_doc.to_dict().get("blockCredits", 0)
+            if user_doc.exists else 0
+        )
+
         leaderboard.append({
             "userId": member_id,
             "displayName": display_name,
@@ -203,6 +199,7 @@ async def get_leaderboard(
             "streakDays": streak_days,
             "isLive": is_live,
             "dailyCapSeconds": daily_cap,
+            "blockCredits": block_credits,
         })
 
     # Rank by least screen time (ascending) — lower is better
