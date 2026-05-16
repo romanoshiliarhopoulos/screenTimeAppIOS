@@ -21,6 +21,7 @@ type LeaderboardEntry = {
   isLive: boolean;
   dailyCapSeconds: number;
   rank: number;
+  blockCredits?: number;
 };
 
 function fmt(s: number): string {
@@ -192,11 +193,16 @@ export default function LeaderboardCard({
                 </View>
               </View>
 
-              {/* Right: streak + time */}
+              {/* Right: streak + credits + time */}
               <View style={styles.rightBlock}>
                 {entry.streakDays > 0 && (
                   <View style={styles.streakBadge}>
                     <Text style={styles.streakText}>🔥{entry.streakDays}</Text>
+                  </View>
+                )}
+                {(entry.blockCredits ?? 0) > 0 && (
+                  <View style={styles.creditsBadge}>
+                    <Text style={styles.creditsText}>💎{entry.blockCredits}</Text>
                   </View>
                 )}
                 <Text style={[styles.time, { color: timeColor(pct) }, isMe && pct < 0.75 && styles.timeMe]}>
@@ -357,6 +363,17 @@ const styles = StyleSheet.create({
     fontSize: fontSize.tiny,
     fontWeight: "600",
     color: colors.textSecondary,
+  },
+  creditsBadge: {
+    backgroundColor: `${colors.accentPrimary}18`,
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  creditsText: {
+    fontSize: fontSize.tiny,
+    fontWeight: "600",
+    color: colors.accentPrimary,
   },
   time: {
     fontSize: fontSize.body,

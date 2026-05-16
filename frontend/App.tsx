@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import HomeScreen from './src/screens/HomeScreen';
 import StatsScreen from './src/screens/StatsScreen';
 import FriendsScreen from './src/screens/FriendsScreen';
+import ChallengesScreen from './src/screens/ChallengesScreen';
 import ProfileScreen, { ProfileStackParamList } from './src/screens/ProfileScreen';
 import ShortcutSetupScreen from './src/screens/ShortcutSetupScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
@@ -20,6 +21,7 @@ export type RootTabParamList = {
   Home: undefined;
   Stats: undefined;
   Friends: undefined;
+  Challenges: undefined;
   Profile: undefined;
 };
 
@@ -171,6 +173,16 @@ export default function App() {
             headerShown: false,
             tabBarIcon: ({ focused, color }) => (
               <Ionicons name={focused ? 'people' : 'people-outline'} size={24} color={color} />
+            ),
+          }}
+        />
+        <Tab.Screen
+          name="Challenges"
+          component={ChallengesScreen}
+          options={{
+            headerShown: false,
+            tabBarIcon: ({ focused, color }) => (
+              <Ionicons name={focused ? 'game-controller' : 'game-controller-outline'} size={24} color={color} />
             ),
           }}
         />

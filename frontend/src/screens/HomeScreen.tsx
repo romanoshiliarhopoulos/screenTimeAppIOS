@@ -214,6 +214,7 @@ export default function HomeScreen() {
   const [shamingId, setShamingId] = useState<string | null>(null);
   const [shameTarget, setShameTarget] = useState<FriendData | null>(null);
   const [cooldownTick, setCooldownTick] = useState(0);
+  const [blockCredits, setBlockCredits] = useState<number | null>(null);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
@@ -354,9 +355,25 @@ export default function HomeScreen() {
   }, [myUid, friendIds.join(",")]);
 
   async function fetchAll() {
-    await Promise.all([fetchStats(), fetchAwards()]);
+    await Promise.all([fetchStats(), fetchAwards(), fetchCredits()]);
     setLoading(false);
     setRefreshing(false);
+  }
+
+  async function fetchCredits() {
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) return;
+      const res = await fetch(`${API_URL}/api/credits/balance`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setBlockCredits(data.balance ?? data.blockCredits ?? 0);
+      }
+    } catch {
+      // silently fail
+    }
   }
 
   async function fetchStats() {
@@ -548,9 +565,16 @@ export default function HomeScreen() {
               </View>
             )}
           </View>
-          <TouchableOpacity style={styles.sosBtn} onPress={handleSOS}>
-            <Text style={styles.sosTxt}>SOS</Text>
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            {blockCredits !== null && (
+              <View style={styles.creditsBadge}>
+                <Text style={styles.creditsBadgeTxt}>💎 {blockCredits}</Text>
+              </View>
+            )}
+            <TouchableOpacity style={styles.sosBtn} onPress={handleSOS}>
+              <Text style={styles.sosTxt}>SOS</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* ── Friend Scroll ── */}
@@ -1466,6 +1490,24 @@ const styles = StyleSheet.create({
     fontSize: fontSize.small,
     fontWeight: "600",
     color: colors.success,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  creditsBadge: {
+    backgroundColor: `${colors.accentPrimary}18`,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: `${colors.accentPrimary}40`,
+  },
+  creditsBadgeTxt: {
+    fontSize: fontSize.body,
+    fontWeight: "700",
+    color: colors.accentPrimary,
   },
   sosBtn: {
     backgroundColor: `${colors.destructive}22`,

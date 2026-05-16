@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import firestore_client  # noqa: F401 — ensures Firebase is initialised before routers load
 
-from routers import usage, groups, users, shortcuts, notifications, social
+from routers import usage, groups, users, shortcuts, notifications, social, challenges, credits
 
 app = FastAPI(
     title="ScreenTime API",
@@ -24,6 +24,8 @@ app.include_router(users.router)
 app.include_router(shortcuts.router)
 app.include_router(notifications.router)
 app.include_router(social.router)
+app.include_router(challenges.router)
+app.include_router(credits.router)
 
 
 @app.get("/api/health")

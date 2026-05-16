@@ -30,11 +30,16 @@ export default function SettingsScreen() {
     async function loadSettings() {
       try {
         const token = await auth.currentUser?.getIdToken();
-        const res = await fetch(`${API_URL}/api/users/me/notification-settings`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
+        const [profileRes, notifRes] = await Promise.all([
+          fetch(`${API_URL}/api/users/me`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API_URL}/api/users/me/notification-settings`, { headers: { Authorization: `Bearer ${token}` } }),
+        ]);
+        if (profileRes.ok) {
+          const data = await profileRes.json();
+          if (data.displayName) setDisplayName(data.displayName);
+        }
+        if (notifRes.ok) {
+          const data = await notifRes.json();
           if (data.barkApiKey) setBarkApiKey(data.barkApiKey);
           if (data.quietHoursStart) setQuietStart(data.quietHoursStart);
           if (data.quietHoursEnd) setQuietEnd(data.quietHoursEnd);
