@@ -12,7 +12,7 @@ The redesign replaces every weak mechanism (self-monitoring, charts, guilt) with
 - You see friends getting sucked in → shame them → they get interrupted → they owe you a reaction
 - You get shamed → you watch a friend's video → you feel seen and slightly embarrassed → you try harder
 - Everyone's stats are public → competition drives behavior more than willpower ever could
-- The group builds a shared identity around fighting doomscrolling together → identity is the strongest regulator of all
+- The group builds a shared identity around fighting doomscrolling together → identity is the strongest regulator
 
 ---
 
