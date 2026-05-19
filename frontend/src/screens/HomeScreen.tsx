@@ -215,6 +215,9 @@ export default function HomeScreen() {
   const [shameTarget, setShameTarget] = useState<FriendData | null>(null);
   const [cooldownTick, setCooldownTick] = useState(0);
   const [blockCredits, setBlockCredits] = useState<number | null>(null);
+  const [lockTarget, setLockTarget] = useState<FriendData | null>(null);
+  const [lockingId, setLockingId] = useState<string | null>(null);
+  const [selfLockVisible, setSelfLockVisible] = useState(false);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
@@ -502,30 +505,61 @@ export default function HomeScreen() {
     }
   }
 
-  async function handleSOS() {
-    Alert.alert(
-      "SOS — Rescue Me",
-      "Notifies all friends and locks you out for 15 minutes.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Send SOS",
-          style: "destructive",
-          onPress: async () => {
-            const token = await auth.currentUser?.getIdToken();
-            await fetch(`${API_URL}/api/sos`, {
-              method: "POST",
-              headers: { Authorization: `Bearer ${token}` },
-            });
-            Alert.alert(
-              "SOS Sent",
-              "Your friends have been notified. Locked out 15 min.",
-            );
-            fetchAll();
-          },
+  async function handleFriendLock(
+    friendId: string,
+    minutes: number,
+    message: string,
+  ) {
+    setLockingId(friendId);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch(`${API_URL}/api/lock-friend/${friendId}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
         },
-      ],
-    );
+        body: JSON.stringify({ minutes, message: message || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        Alert.alert("Failed", data.detail ?? "Could not lock friend");
+      } else {
+        setBlockCredits(data.newBalance);
+        Alert.alert("Locked", `Locked out for ${minutes} min. 💎 ${data.newBalance} credits left.`);
+        fetchAll();
+      }
+    } catch {
+      Alert.alert("Error", "Failed to lock friend");
+    } finally {
+      setLockingId(null);
+      setLockTarget(null);
+    }
+  }
+
+  async function handleSelfLock(seconds: number) {
+    setSelfLockVisible(false);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch(`${API_URL}/api/self-lock`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ seconds }),
+      });
+      const data = await res.json();
+      const until = new Date(data.lockedUntil);
+      const label =
+        until.toDateString() !== new Date().toDateString()
+          ? `until tomorrow at ${until.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+          : `for ${Math.round(seconds / 60)} min`;
+      Alert.alert("Locked 🔒", `You're locked out ${label}.`);
+      fetchAll();
+    } catch {
+      Alert.alert("Error", "Failed to lock");
+    }
   }
 
   const liveCount = friends.filter((f) => f.status === "live").length;
@@ -537,6 +571,20 @@ export default function HomeScreen() {
         isSending={shamingId === shameTarget?.userId}
         onClose={() => setShameTarget(null)}
         onSend={(opts) => handleShame(shameTarget!.userId, opts)}
+      />
+      <LockModal
+        friend={lockTarget}
+        credits={blockCredits ?? 0}
+        isLocking={lockingId === lockTarget?.userId}
+        onClose={() => setLockTarget(null)}
+        onLock={(minutes, message) =>
+          handleFriendLock(lockTarget!.userId, minutes, message)
+        }
+      />
+      <SelfLockModal
+        visible={selfLockVisible}
+        onClose={() => setSelfLockVisible(false)}
+        onLock={handleSelfLock}
       />
       <ScrollView
         style={styles.container}
@@ -571,8 +619,8 @@ export default function HomeScreen() {
                 <Text style={styles.creditsBadgeTxt}>💎 {blockCredits}</Text>
               </View>
             )}
-            <TouchableOpacity style={styles.sosBtn} onPress={handleSOS}>
-              <Text style={styles.sosTxt}>SOS</Text>
+            <TouchableOpacity style={styles.lockBtn} onPress={() => setSelfLockVisible(true)}>
+              <Ionicons name="lock-closed" size={18} color={colors.destructive} />
             </TouchableOpacity>
           </View>
         </View>
@@ -606,7 +654,9 @@ export default function HomeScreen() {
                 friend={f}
                 pulseAnim={pulseAnim}
                 shamingId={shamingId}
+                lockingId={lockingId}
                 onOpenShameModal={setShameTarget}
+                onOpenLockModal={setLockTarget}
                 cooldownTick={cooldownTick}
               />
             ))}
@@ -679,18 +729,23 @@ const FriendPill = React.memo(function FriendPill({
   friend,
   pulseAnim,
   shamingId,
+  lockingId,
   onOpenShameModal,
+  onOpenLockModal,
   cooldownTick: _cooldownTick,
 }: {
   friend: FriendData;
   pulseAnim: Animated.Value;
   shamingId: string | null;
+  lockingId: string | null;
   onOpenShameModal: (f: FriendData) => void;
+  onOpenLockModal: (f: FriendData) => void;
   cooldownTick: number;
 }) {
   const isLive = friend.status === "live";
   const isRecent = friend.status === "recent";
   const isShaming = shamingId === friend.userId;
+  const isLocking = lockingId === friend.userId;
 
   const inBreakWindow = !!friend.inBreakWindow;
   const shameActive = isLive || inBreakWindow;
@@ -779,6 +834,18 @@ const FriendPill = React.memo(function FriendPill({
               )}
             </TouchableOpacity>
           )}
+          <TouchableOpacity
+            style={[styles.pillLockBtn, isLocking && styles.pillLockBtnDim]}
+            disabled={isLocking}
+            onPress={() => onOpenLockModal(friend)}
+            activeOpacity={0.8}
+          >
+            {isLocking ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.pillLockTxt}>🔒</Text>
+            )}
+          </TouchableOpacity>
         </View>
       )}
     </View>
@@ -1119,6 +1186,377 @@ function ShameModal({
               <Text style={styles.sendBtnTxt}>Send Shame 🔥</Text>
             )}
           </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+// ── Self Lock Modal ───────────────────────────────────────────────────────────
+
+// Slider steps: 5m → 24h
+const SL_STEPS_MIN = [5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440];
+const SL_STEPS_SEC = SL_STEPS_MIN.map((m) => m * 60);
+const SL_N = SL_STEPS_SEC.length;
+const SL_THUMB = 26;
+
+const SL_PRESETS = [
+  { label: "15m", idx: SL_STEPS_MIN.indexOf(15) },
+  { label: "30m", idx: SL_STEPS_MIN.indexOf(30) },
+  { label: "1h",  idx: SL_STEPS_MIN.indexOf(60) },
+  { label: "2h",  idx: SL_STEPS_MIN.indexOf(120) },
+  { label: "4h",  idx: SL_STEPS_MIN.indexOf(240) },
+];
+
+function secondsUntilTomorrow(): number {
+  const now = new Date();
+  const tom = new Date(now);
+  tom.setDate(now.getDate() + 1);
+  tom.setHours(9, 0, 0, 0);
+  return Math.floor((tom.getTime() - now.getTime()) / 1000);
+}
+
+function fmtDuration(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (h > 0 && m > 0) return `${h}h ${m}m`;
+  if (h > 0) return `${h}h`;
+  return `${m}m`;
+}
+
+function SelfLockModal({
+  visible,
+  onClose,
+  onLock,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onLock: (seconds: number) => void;
+}) {
+  const DEFAULT_IDX = SL_STEPS_MIN.indexOf(15);
+  const [idx, setIdx] = useState(DEFAULT_IDX);
+  const [untilTom, setUntilTom] = useState(false);
+  const trackW = useRef(0);
+  const idxRef = useRef(DEFAULT_IDX); // shadow of idx that never lags behind
+  const thumbAnim = useRef(new Animated.Value(0)).current;
+  const fillAnim = useRef(new Animated.Value(DEFAULT_IDX / (SL_N - 1))).current;
+
+  // Spring only for preset chip taps — NOT used during drag
+  function springTo(newIdx: number) {
+    const pct = newIdx / (SL_N - 1);
+    Animated.parallel([
+      Animated.spring(thumbAnim, {
+        toValue: pct * Math.max(0, trackW.current - SL_THUMB),
+        useNativeDriver: false,
+        tension: 220,
+        friction: 11,
+      }),
+      Animated.spring(fillAnim, {
+        toValue: pct,
+        useNativeDriver: false,
+        tension: 220,
+        friction: 11,
+      }),
+    ]).start();
+  }
+
+  function snapToIdx(newIdx: number) {
+    const clamped = Math.max(0, Math.min(SL_N - 1, newIdx));
+    idxRef.current = clamped;
+    setIdx(clamped);
+    setUntilTom(false);
+    springTo(clamped);
+  }
+
+  // During drag: setValue (zero overhead, no animation) — only re-render when step changes
+  function fromTouchX(x: number) {
+    if (!trackW.current) return;
+    const pct = Math.max(0, Math.min(1, x / trackW.current));
+    const newIdx = Math.round(pct * (SL_N - 1));
+    // Move visuals instantly — no Animated.spring, just direct set
+    thumbAnim.setValue(pct * Math.max(0, trackW.current - SL_THUMB));
+    fillAnim.setValue(pct);
+    // Re-render label only when crossing a step boundary
+    if (newIdx !== idxRef.current) {
+      idxRef.current = newIdx;
+      setIdx(newIdx);
+      setUntilTom(false);
+    }
+  }
+
+  function selectTomorrow() {
+    idxRef.current = SL_N - 1;
+    setUntilTom(true);
+    Animated.parallel([
+      Animated.spring(thumbAnim, {
+        toValue: Math.max(0, trackW.current - SL_THUMB),
+        useNativeDriver: false,
+        tension: 220,
+        friction: 11,
+      }),
+      Animated.spring(fillAnim, {
+        toValue: 1,
+        useNativeDriver: false,
+        tension: 220,
+        friction: 11,
+      }),
+    ]).start();
+  }
+
+  useEffect(() => {
+    if (visible) {
+      idxRef.current = DEFAULT_IDX;
+      setUntilTom(false);
+      setIdx(DEFAULT_IDX);
+      fillAnim.setValue(DEFAULT_IDX / (SL_N - 1));
+      thumbAnim.setValue(0);
+    }
+  }, [visible]);
+
+  function onTrackLayout(e: any) {
+    trackW.current = e.nativeEvent.layout.width;
+    // Position thumb correctly after layout without spring
+    const pct = idxRef.current / (SL_N - 1);
+    thumbAnim.setValue(pct * Math.max(0, trackW.current - SL_THUMB));
+    fillAnim.setValue(pct);
+  }
+
+  const resolvedSecs = untilTom ? secondsUntilTomorrow() : SL_STEPS_SEC[idx];
+
+  const bigLabel = untilTom
+    ? "Until 9am tomorrow 🌅"
+    : fmtDuration(SL_STEPS_SEC[idx]);
+
+  const confirmLabel = untilTom
+    ? "until 9am tomorrow"
+    : `for ${fmtDuration(SL_STEPS_SEC[idx])}`;
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <KeyboardAvoidingView
+        style={styles.modalOverlay}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHeader}>
+            <View>
+              <Text style={styles.modalTitle}>🔒 Lock Yourself Out</Text>
+              <Text style={styles.modalSub}>Block all tracked apps</Text>
+            </View>
+            <TouchableOpacity onPress={onClose} hitSlop={12}>
+              <Text style={styles.modalClose}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Big time display */}
+          <Text style={styles.slBigTime}>{bigLabel}</Text>
+
+          {/* Slider */}
+          <View
+            style={styles.slTrackWrap}
+            onLayout={onTrackLayout}
+            onStartShouldSetResponder={() => true}
+            onMoveShouldSetResponder={() => true}
+            onResponderGrant={(e) => fromTouchX(e.nativeEvent.locationX)}
+            onResponderMove={(e) => fromTouchX(e.nativeEvent.locationX)}
+          >
+            <View style={styles.slTrack}>
+              <Animated.View
+                style={[
+                  styles.slFill,
+                  {
+                    width: fillAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ["0%", "100%"],
+                    }),
+                  },
+                ]}
+              />
+            </View>
+            <Animated.View style={[styles.slThumb, { left: thumbAnim }]} />
+          </View>
+
+          {/* Min / max labels */}
+          <View style={styles.slEndLabels}>
+            <Text style={styles.slEndTxt}>5 min</Text>
+            <Text style={styles.slEndTxt}>24 h</Text>
+          </View>
+
+          {/* Preset chips */}
+          <View style={styles.slPresetRow}>
+            {SL_PRESETS.map((p) => {
+              const active = !untilTom && idx === p.idx;
+              return (
+                <TouchableOpacity
+                  key={p.label}
+                  style={[styles.slChip, active && styles.slChipActive]}
+                  onPress={() => snapToIdx(p.idx)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.slChipTxt, active && styles.slChipTxtActive]}>
+                    {p.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+            <TouchableOpacity
+              style={[styles.slChip, styles.slChipTomorrow, untilTom && styles.slChipActive]}
+              onPress={selectTomorrow}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.slChipTxt, untilTom && styles.slChipTxtActive]}>
+                🌅 Tomorrow
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.lockBtnRow}>
+            <TouchableOpacity style={styles.lockCancelBtn} onPress={onClose}>
+              <Text style={styles.lockCancelTxt}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.lockConfirmBtn}
+              onPress={() => onLock(resolvedSecs)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.lockConfirmTxt}>Lock {confirmLabel} 🔒</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+// ── Lock Modal ────────────────────────────────────────────────────────────────
+
+const LOCK_DURATIONS = [5, 10, 15, 20, 25];
+
+function LockModal({
+  friend,
+  credits,
+  isLocking,
+  onClose,
+  onLock,
+}: {
+  friend: FriendData | null;
+  credits: number;
+  isLocking: boolean;
+  onClose: () => void;
+  onLock: (minutes: number, message: string) => void;
+}) {
+  const [selectedMinutes, setSelectedMinutes] = useState(5);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (friend) {
+      setSelectedMinutes(5);
+      setMessage("");
+    }
+  }, [friend?.userId]);
+
+  const canAfford = credits >= selectedMinutes;
+
+  return (
+    <Modal
+      visible={!!friend}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <KeyboardAvoidingView
+        style={styles.modalOverlay}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHeader}>
+            <View>
+              <Text style={styles.modalTitle}>🔒 Lock Out</Text>
+              <Text style={styles.modalSub}>
+                {friend?.displayName} · costs 1 💎 per minute
+              </Text>
+            </View>
+            <TouchableOpacity onPress={onClose} hitSlop={12}>
+              <Text style={styles.modalClose}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Duration picker */}
+          <Text style={styles.lockDurationLabel}>Duration</Text>
+          <View style={styles.lockDurationRow}>
+            {LOCK_DURATIONS.map((m) => (
+              <TouchableOpacity
+                key={m}
+                style={[
+                  styles.lockDurationChip,
+                  selectedMinutes === m && styles.lockDurationChipSelected,
+                ]}
+                onPress={() => setSelectedMinutes(m)}
+                activeOpacity={0.7}
+              >
+                <Text
+                  style={[
+                    styles.lockDurationChipTxt,
+                    selectedMinutes === m && styles.lockDurationChipTxtSelected,
+                  ]}
+                >
+                  {m}m
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {/* Cost indicator */}
+          <View style={styles.lockCostRow}>
+            <Text style={[styles.lockCostTxt, !canAfford && { color: colors.destructive }]}>
+              Cost: {selectedMinutes} 💎 · You have: {credits} 💎
+            </Text>
+            {!canAfford && (
+              <Text style={styles.lockInsufficientTxt}>Not enough credits</Text>
+            )}
+          </View>
+
+          {/* Message input */}
+          <TextInput
+            style={styles.lockMessageInput}
+            placeholder="Add a message... (sent as notification)"
+            placeholderTextColor={colors.textTertiary}
+            value={message}
+            onChangeText={setMessage}
+            maxLength={120}
+            multiline
+          />
+
+          {/* Buttons */}
+          <View style={styles.lockBtnRow}>
+            <TouchableOpacity style={styles.lockCancelBtn} onPress={onClose}>
+              <Text style={styles.lockCancelTxt}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.lockConfirmBtn,
+                (!canAfford || isLocking) && styles.lockConfirmBtnDim,
+              ]}
+              disabled={!canAfford || isLocking}
+              onPress={() => onLock(selectedMinutes, message)}
+              activeOpacity={0.8}
+            >
+              {isLocking ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.lockConfirmTxt}>
+                  Lock for {selectedMinutes}m 🔒
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -1509,18 +1947,94 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: colors.accentPrimary,
   },
-  sosBtn: {
+  lockBtn: {
     backgroundColor: `${colors.destructive}22`,
     borderRadius: 8,
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     paddingVertical: 8,
     borderWidth: 1,
     borderColor: `${colors.destructive}44`,
   },
-  sosTxt: {
-    fontSize: fontSize.body,
-    fontWeight: "700",
+  // Self-lock slider
+  slBigTime: {
+    fontSize: 32,
+    fontWeight: "800",
+    color: colors.textPrimary,
+    textAlign: "center",
+    letterSpacing: -0.5,
+    marginVertical: spacing.lg,
+  },
+  slTrackWrap: {
+    height: 44,
+    justifyContent: "center",
+    marginHorizontal: 4,
+    marginBottom: 4,
+  },
+  slTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.surface2,
+    overflow: "hidden",
+  },
+  slFill: {
+    height: "100%",
+    borderRadius: 3,
+    backgroundColor: colors.destructive,
+  },
+  slThumb: {
+    position: "absolute",
+    width: SL_THUMB,
+    height: SL_THUMB,
+    borderRadius: SL_THUMB / 2,
+    backgroundColor: "#fff",
+    top: (44 - SL_THUMB) / 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 4,
+    borderWidth: 2,
+    borderColor: colors.destructive,
+  },
+  slEndLabels: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: spacing.md,
+  },
+  slEndTxt: {
+    fontSize: fontSize.tiny,
+    color: colors.textTertiary,
+  },
+  slPresetRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: spacing.lg,
+  },
+  slChip: {
+    backgroundColor: colors.surface2,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderWidth: 1.5,
+    borderColor: "transparent",
+  },
+  slChipTomorrow: {
+    flexGrow: 1,
+    alignItems: "center",
+  },
+  slChipActive: {
+    borderColor: colors.destructive,
+    backgroundColor: `${colors.destructive}18`,
+  },
+  slChipTxt: {
+    fontSize: fontSize.small,
+    fontWeight: "600",
+    color: colors.textSecondary,
+  },
+  slChipTxtActive: {
     color: colors.destructive,
+    fontWeight: "700",
   },
 
   // Loading / empty
@@ -1602,6 +2116,21 @@ const styles = StyleSheet.create({
   },
   pillShameWrap: {
     marginTop: 6,
+    gap: 5,
+  },
+  pillLockBtn: {
+    backgroundColor: colors.surface2,
+    borderRadius: 7,
+    paddingVertical: 5,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  pillLockBtnDim: {
+    opacity: 0.4,
+  },
+  pillLockTxt: {
+    fontSize: fontSize.tiny,
   },
   pillShameBtn: {
     backgroundColor: colors.destructive,
@@ -2134,5 +2663,98 @@ const styles = StyleSheet.create({
     fontSize: fontSize.tiny,
     color: colors.textSecondary,
     textAlign: "center",
+  },
+
+  // Lock modal
+  lockDurationLabel: {
+    fontSize: fontSize.small,
+    fontWeight: "600",
+    color: colors.textTertiary,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginTop: spacing.md,
+    marginBottom: spacing.xs,
+  },
+  lockDurationRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: spacing.sm,
+  },
+  lockDurationChip: {
+    flex: 1,
+    backgroundColor: colors.surface2,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: "center",
+    borderWidth: 1.5,
+    borderColor: "transparent",
+  },
+  lockDurationChipSelected: {
+    borderColor: colors.destructive,
+    backgroundColor: `${colors.destructive}18`,
+  },
+  lockDurationChipTxt: {
+    fontSize: fontSize.body,
+    fontWeight: "600",
+    color: colors.textSecondary,
+  },
+  lockDurationChipTxtSelected: {
+    color: colors.destructive,
+    fontWeight: "700",
+  },
+  lockCostRow: {
+    marginBottom: spacing.sm,
+  },
+  lockCostTxt: {
+    fontSize: fontSize.small,
+    color: colors.textSecondary,
+    fontWeight: "500",
+  },
+  lockInsufficientTxt: {
+    fontSize: fontSize.tiny,
+    color: colors.destructive,
+    marginTop: 2,
+    fontWeight: "600",
+  },
+  lockMessageInput: {
+    backgroundColor: colors.surface2,
+    borderRadius: 12,
+    padding: spacing.sm,
+    color: colors.textPrimary,
+    fontSize: fontSize.body,
+    minHeight: 60,
+    textAlignVertical: "top",
+    marginBottom: spacing.md,
+  },
+  lockBtnRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  lockCancelBtn: {
+    flex: 1,
+    backgroundColor: colors.surface2,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  lockCancelTxt: {
+    fontSize: fontSize.body,
+    fontWeight: "600",
+    color: colors.textSecondary,
+  },
+  lockConfirmBtn: {
+    flex: 2,
+    backgroundColor: colors.destructive,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  lockConfirmBtnDim: {
+    opacity: 0.4,
+  },
+  lockConfirmTxt: {
+    fontSize: fontSize.body,
+    fontWeight: "800",
+    color: "#fff",
   },
 });

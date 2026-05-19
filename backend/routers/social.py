@@ -78,25 +78,27 @@ def gateway(userId: str = Query(...)):
     Returns plain text message when locked (Shortcut sees "has any value"),
     or 204 No Content when allowed (Shortcut sees "does not have any value").
     """
-    from fastapi.responses import Response as RawResponse, PlainTextResponse
+    from fastapi.responses import JSONResponse, PlainTextResponse
 
+    no_cache = {"Cache-Control": "no-store, no-cache, must-revalidate"}
     now = datetime.now(timezone.utc)
 
-    gw_doc = (
-        db.collection("users").document(userId)
-        .collection("gatewayState").document("current").get()
-    )
-    if gw_doc.exists:
-        gw = gw_doc.to_dict()
+    user_doc = db.collection("users").document(userId).get()
+    if user_doc.exists:
+        gw = user_doc.to_dict()
         if gw.get("locked"):
             locked_until = _parse_time(gw.get("lockedUntil", ""))
             if locked_until > now:
-                until_str = locked_until.strftime("%-I:%M %p")
-                return PlainTextResponse(f"Locked until {until_str}")
+                remaining_secs = int((locked_until - now).total_seconds())
+                remaining_str = f"{remaining_secs // 60} min" if remaining_secs >= 60 else f"{remaining_secs} sec"
+                locker_id = gw.get("lockedBy", "")
+                blocked_by = "You" if locker_id == userId else gw.get("lockedByName", "someone")
+                message = f"Locked for {remaining_str} · by {blocked_by}"
+                return PlainTextResponse(message, headers=no_cache)
             # Lock expired — clear it
-            gw_doc.reference.update({"locked": False})
+            user_doc.reference.update({"locked": False})
 
-    return RawResponse(status_code=204)
+    return JSONResponse({}, headers=no_cache)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -168,6 +170,7 @@ def send_shame(
     #     return {"status": "cooldown", "message": "Wait before shaming again"}
 
     from_name = _get_display_name(uid)
+    to_name = _get_display_name(toUserId)
     now = _now_iso()
 
     # Emergency shame check — once per day per pair
@@ -194,6 +197,7 @@ def send_shame(
         "fromUserId": uid,
         "toUserId": toUserId,
         "fromName": from_name,
+        "toName": to_name,
         "type": payload.type,
         "reaction": payload.reaction,
         "videoUrl": payload.videoUrl,
@@ -323,6 +327,11 @@ class LockPayload(BaseModel):
     seconds: int = 60
 
 
+class FriendLockPayload(BaseModel):
+    minutes: int = 5
+    message: Optional[str] = None
+
+
 @router.post("/api/lock/{target_user_id}")
 def lock_user(target_user_id: str, payload: LockPayload = None, uid: str = Depends(get_uid)):
     """Lock a friend out of all tracked apps for N seconds."""
@@ -342,6 +351,54 @@ def lock_user(target_user_id: str, payload: LockPayload = None, uid: str = Depen
         f"All apps blocked for {payload.seconds}s",
     )
     return {"status": "locked", "seconds": payload.seconds}
+
+
+@router.post("/api/lock-friend/{target_user_id}", status_code=200)
+def lock_friend(
+    target_user_id: str,
+    payload: FriendLockPayload = None,
+    uid: str = Depends(get_uid),
+):
+    """
+    Spend credits to lock a friend out for 5–25 minutes.
+    1 credit = 1 minute. Sends a BARK notification with an optional message.
+    """
+    from services.challenge_service import deduct_credits
+
+    if payload is None:
+        payload = FriendLockPayload()
+
+    if target_user_id not in _get_friend_ids(uid):
+        raise HTTPException(status_code=403, detail="Not friends")
+
+    minutes = payload.minutes
+    if minutes < 5 or minutes > 25:
+        raise HTTPException(status_code=400, detail="Lock duration must be 5–25 minutes")
+
+    # Deduct credits (raises 400 if insufficient)
+    deduct_credits(
+        uid=uid,
+        amount=minutes,
+        type="friend_lock",
+        challenge_id=None,
+        target_uid=target_user_id,
+        note=f"Locked {target_user_id} for {minutes} min",
+    )
+
+    from_name = _get_display_name(uid)
+    seconds = minutes * 60
+    _lock_user(target_user_id, uid, from_name, seconds)
+
+    # Send BARK notification with the custom message
+    lock_title = f"🔒 {from_name} locked you out for {minutes}m"
+    lock_body = payload.message.strip() if payload.message and payload.message.strip() else "Put the phone down."
+    _send_notification_to_user(target_user_id, lock_title, lock_body)
+
+    # Get updated balance to return to client
+    user_doc = db.collection("users").document(uid).get()
+    new_balance = user_doc.to_dict().get("blockCredits", 0) if user_doc.exists else 0
+
+    return {"status": "locked", "minutes": minutes, "newBalance": new_balance}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -374,16 +431,23 @@ def send_sos(uid: str = Depends(get_uid)):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 4b. SELF-LOCK — user locks themselves out for 15 minutes
+# 4b. SELF-LOCK — user locks themselves out for a chosen duration
 # ══════════════════════════════════════════════════════════════════════
 
+class SelfLockPayload(BaseModel):
+    seconds: int = 900  # default 15 min
+
+
 @router.post("/api/self-lock")
-def self_lock(uid: str = Depends(get_uid)):
-    """Lock yourself out of all social apps for 15 minutes."""
+def self_lock(payload: SelfLockPayload = None, uid: str = Depends(get_uid)):
+    """Lock yourself out of all social apps for a chosen duration (max 24h)."""
+    if payload is None:
+        payload = SelfLockPayload()
+    seconds = max(60, min(payload.seconds, 86400))
     name = _get_display_name(uid)
-    _lock_user(uid, uid, name, 900)
-    until = (datetime.now(timezone.utc) + timedelta(seconds=900)).isoformat()
-    return {"status": "ok", "lockedUntil": until}
+    _lock_user(uid, uid, name, seconds)
+    until = (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+    return {"status": "ok", "lockedUntil": until, "seconds": seconds}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -527,7 +591,7 @@ def get_feed(uid: str = Depends(get_uid)):
                         "fromUserId": from_id,
                         "fromName": names.get(from_id, data.get("fromName", "Someone")),
                         "toUserId": to_id,
-                        "toName": names.get(to_id, "someone"),
+                        "toName": names.get(to_id, data.get("toName", "someone")),
                         "reaction": _REACTION_EMOJI_MAP.get(reaction_raw, reaction_raw),
                         "message": data.get("message"),
                         "videoUrl": data.get("videoUrl"),
@@ -1360,18 +1424,9 @@ def get_intent_analysis(uid: str = Depends(get_uid)):
 
 def _lock_user(target_id: str, locker_id: str, locker_name: str, seconds: int):
     until = (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
-    db.collection("users").document(target_id).collection(
-        "gatewayState"
-    ).document("current").set({
-        "locked": True,
-        "lockedUntil": until,
-        "lockedBy": locker_id,
-        "lockedByName": locker_name,
-        "lockedAt": _now_iso(),
-    })
-    # Mirror on user document for quick querying from the app
     db.collection("users").document(target_id).set(
-        {"locked": True, "lockedUntil": until}, merge=True
+        {"locked": True, "lockedUntil": until, "lockedBy": locker_id, "lockedByName": locker_name},
+        merge=True,
     )
 
 

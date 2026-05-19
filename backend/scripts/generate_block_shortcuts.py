@@ -1,6 +1,10 @@
 """
-Run this script locally on a Mac whenever the block-shortcut structure changes.
-Generates signed .shortcut files for every app using the block-gate flow.
+Run this script locally on a Mac whenever the shortcut structure changes.
+Generates signed .shortcut files for every app — three per app:
+
+  {app}-launcher.shortcut      Home-screen icon replacement (gateway check)
+  {app}-open.shortcut          iOS automation: fires when app opens
+  {app}-close.shortcut         iOS automation: fires when app closes
 
 Output: backend/shortcuts/new_shortcuts/
 
@@ -34,6 +38,8 @@ APPS = [
     "LinkedIn",
 ]
 
+EVENTS = ["launcher", "open", "close"]
+
 OUT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "shortcuts",
@@ -45,11 +51,11 @@ def main():
     api_url = os.environ.get("API_URL", "https://functions-eight-topaz.vercel.app")
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    total = len(APPS) * 2
+    total = len(APPS) * len(EVENTS)
     done = 0
 
     for app in APPS:
-        for event in ("open", "close"):
+        for event in EVENTS:
             plist_bytes = build_block_shortcut_plist(app, event, api_url)
             signed_bytes = sign_block_shortcut(plist_bytes)
 

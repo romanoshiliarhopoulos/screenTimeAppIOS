@@ -20,26 +20,20 @@ const APPS = [
   'Facebook',
   'TikTok',
   'X',
-  'Snapchat',
   'Reddit',
-  'Threads',
-  'WhatsApp',
-  'Discord',
-  'Twitch',
   'LinkedIn',
 ];
 
 const AUTOMATION_STEPS = [
-  'Download both shortcuts for each app you want to block',
-  'Install the Launcher shortcut — Safari will open Shortcuts automatically',
-  'Long-press the Launcher in Shortcuts → Share → Add to Home Screen',
+  'Download all 3 shortcuts for each app you want to block',
+  'Tap Launcher → add to Shortcuts, then long-press it → Share → Add to Home Screen',
   'Name it the same as the app (e.g. "Instagram") and set its icon',
   'Long-press the real app on your home screen → Remove from Home Screen',
-  'Install the Close shortcut, then open Shortcuts → Automations tab',
-  'Tap + → App → select the app → check "Is Closed" → run the Close shortcut → disable "Ask Before Running"',
+  'Open Shortcuts → Automations → + → App → select the app → check "Is Opened" → run the Open shortcut → disable "Ask Before Running"',
+  'Repeat for "Is Closed" using the Close shortcut',
 ];
 
-type DoneKey = `${string}-${'open' | 'close'}`;
+type DoneKey = `${string}-${'launcher' | 'open' | 'close'}`;
 
 export default function ShortcutSetupScreen() {
   const [loading, setLoading] = useState<string | null>(null);
@@ -53,7 +47,7 @@ export default function ShortcutSetupScreen() {
     setTimeout(() => setCopied(false), 2000);
   }
 
-  async function download(appName: string, event: 'open' | 'close') {
+  async function download(appName: string, event: 'launcher' | 'open' | 'close') {
     const key: DoneKey = `${appName}-${event}`;
     setLoading(key);
     try {
@@ -100,12 +94,13 @@ export default function ShortcutSetupScreen() {
       {/* Step 1 */}
       <Text style={styles.sectionHeader}>Step 1 — Download Shortcuts</Text>
       <Text style={styles.stepNote}>
-        Download both Launcher and Close shortcuts for each app you want to
-        block. Safari will prompt you to add them.
+        Download all 3 shortcuts for each app: Launcher (home screen icon),
+        Open tracker, and Close tracker. Safari will hand them to the Shortcuts app.
       </Text>
 
       <View style={styles.card}>
         {APPS.map((app, i) => {
+          const launcherDone = done.has(`${app}-launcher`);
           const openDone = done.has(`${app}-open`);
           const closeDone = done.has(`${app}-close`);
           const isLast = i === APPS.length - 1;
@@ -116,6 +111,15 @@ export default function ShortcutSetupScreen() {
             >
               <Text style={styles.appName}>{app}</Text>
               <View style={styles.btnGroup}>
+                <TouchableOpacity
+                  style={[styles.btn, launcherDone && styles.btnDone]}
+                  onPress={() => download(app, 'launcher')}
+                  disabled={loading === `${app}-launcher`}
+                >
+                  <Text style={[styles.btnText, launcherDone && styles.btnTextDone]}>
+                    {loading === `${app}-launcher` ? '…' : launcherDone ? 'Launch ✓' : 'Launch ↓'}
+                  </Text>
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.btn, openDone && styles.btnDone]}
                   onPress={() => download(app, 'open')}
