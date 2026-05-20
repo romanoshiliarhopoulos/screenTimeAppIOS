@@ -10,8 +10,9 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@expo/ngrok": "^4.0.1",
     "@expo/vector-icons": "^15.0.3",
-    "@react-native-async-storage/async-storage": "^3.0.2",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.15.11",
     "@react-navigation/native": "^7.2.2",
     "@react-navigation/native-stack": "^7.14.12",

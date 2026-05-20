@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  Animated,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,6 +22,36 @@ import { auth } from '../lib/firebase';
 import { colors, spacing, fontSize } from '../theme';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
+
+// ── Duration slider (CreateBetModal) ─────────────────────────────────────────
+
+const DUR_STEPS_MIN = [15, 30, 45, 60, 90, 120, 180];
+const DUR_N = DUR_STEPS_MIN.length;
+const DUR_THUMB = 24;
+const DUR_PRESETS = [
+  { label: '15m', idx: 0 },
+  { label: '30m', idx: 1 },
+  { label: '1h',  idx: 3 },
+  { label: '2h',  idx: 5 },
+  { label: '3h',  idx: 6 },
+];
+
+type CalOption = 'today' | 'tomorrow' | 'week';
+const CAL_OPTIONS: Array<{ key: CalOption; label: string }> = [
+  { key: 'today',    label: 'Today' },
+  { key: 'tomorrow', label: 'Tomorrow' },
+  { key: 'week',     label: 'This Week' },
+];
+
+function durLabel(calOpt: CalOption | null, idx: number): string {
+  if (calOpt === 'today')    return 'End of Today';
+  if (calOpt === 'tomorrow') return 'End of Tomorrow';
+  if (calOpt === 'week')     return 'End of Week';
+  const m = DUR_STEPS_MIN[idx];
+  if (m < 60) return `${m} min`;
+  const h = m / 60;
+  return h === Math.floor(h) ? `${h}h` : `${Math.floor(h)}h ${m % 60}m`;
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -71,6 +102,24 @@ type ActiveChallenge = Challenge & {
   timeRemainingSeconds: number;
 };
 
+type DailyChallenge = {
+  id: string;
+  title: string;
+  description: string;
+  metric: 'screen_time' | 'opens';
+  target_app: string | null;
+  goal_type: 'beat_yesterday' | 'weekly_average' | 'fixed';
+  stake_credits: number;
+  reward_credits: number;
+  difficulty: 'easy' | 'medium' | 'hard';
+  enrolled: boolean;
+  goal: number | null;
+  currentProgress: number;
+  status: 'available' | 'active' | 'claimable' | 'claimed';
+  result: 'pending' | 'won' | 'lost' | null;
+  enrollmentId: string | null;
+};
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function daysLeft(endDate: string): string {
@@ -92,11 +141,38 @@ function txTypeLabel(type: string): string {
   switch (type) {
     case 'challenge_win': return 'Challenge Win';
     case 'challenge_loss': return 'Challenge Loss';
+    case 'challenge_stake': return 'Daily Challenge Stake';
     case 'weekly_reward': return 'Weekly Reward';
     case 'spend_block': return 'Spent Block';
     case 'refund': return 'Refund';
+    case 'starter_grant': return 'Welcome Bonus';
     default: return type.replace(/_/g, ' ');
   }
+}
+
+function fmtSeconds(s: number): string {
+  if (s <= 0) return '0m';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m.toString().padStart(2, '0')}m`;
+}
+
+function fmtMetric(value: number, metric: string): string {
+  if (metric === 'screen_time') return fmtSeconds(value);
+  return String(Math.round(value));
+}
+
+function goalHint(goalType: string, metric: string): string {
+  if (goalType === 'beat_yesterday') return metric === 'screen_time' ? 'Goal: less than yesterday' : 'Goal: fewer than yesterday';
+  if (goalType === 'weekly_average') return 'Goal: under your 7-day average';
+  return '';
+}
+
+function difficultyColor(d: string): string {
+  if (d === 'easy') return colors.success;
+  if (d === 'hard') return colors.destructive;
+  return colors.warning;
 }
 
 function fmtTimestamp(ts: string): string {
@@ -202,6 +278,151 @@ function AppChallengeCard({
         {isSettled && (
           <View style={styles.settledBadge}>
             <Text style={styles.settledBadgeText}>Settled</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
+// ── Daily Challenge Card ──────────────────────────────────────────────────────
+
+function DailyChallengeCard({
+  challenge,
+  onEnter,
+  onClaim,
+  acting,
+}: {
+  challenge: DailyChallenge;
+  onEnter: (id: string) => void;
+  onClaim: (id: string) => void;
+  acting: boolean;
+}) {
+  const { status, result, enrolled, goal, currentProgress, metric } = challenge;
+  const isClaimed = status === 'claimed';
+  const isClaimable = status === 'claimable';
+  const isActive = status === 'active';
+  const isAvailable = status === 'available';
+
+  const diffColor = difficultyColor(challenge.difficulty);
+  const pct = goal != null && goal > 0 ? Math.min(currentProgress / goal, 1.2) : 0;
+  const barColor = pct >= 1 ? colors.destructive : pct > 0.8 ? colors.warning : colors.success;
+
+  return (
+    <View style={[styles.card, isClaimed && result === 'won' && styles.cardWon, isClaimed && result === 'lost' && styles.cardLost]}>
+      {/* Header */}
+      <View style={styles.cardHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.cardTitle}>{challenge.title}</Text>
+          <Text style={styles.cardMeta}>
+            {metric === 'screen_time' ? 'Screen Time' : 'Opens'}
+            {challenge.target_app ? ` · ${challenge.target_app}` : ''}
+          </Text>
+        </View>
+        <View style={{ alignItems: 'flex-end', gap: 4 }}>
+          <View style={[styles.diffBadge, { backgroundColor: `${diffColor}22`, borderColor: `${diffColor}55` }]}>
+            <Text style={[styles.diffBadgeText, { color: diffColor }]}>
+              {challenge.difficulty.toUpperCase()}
+            </Text>
+          </View>
+          <View style={styles.rewardBadge}>
+            <Text style={styles.rewardBadgeText}>+{challenge.reward_credits}</Text>
+          </View>
+        </View>
+      </View>
+
+      <Text style={styles.cardDesc}>{challenge.description}</Text>
+
+      {/* Goal display */}
+      {!isAvailable && goal != null && (
+        <View style={styles.dailyGoalRow}>
+          <Ionicons name="flag-outline" size={13} color={colors.textTertiary} />
+          <Text style={styles.dailyGoalText}>
+            Goal: {fmtMetric(goal, metric)}
+            {metric === 'screen_time' ? ' or less' : ' opens or less'}
+          </Text>
+        </View>
+      )}
+      {isAvailable && challenge.goal_type !== 'fixed' && (
+        <Text style={styles.dailyGoalHint}>{goalHint(challenge.goal_type, metric)}</Text>
+      )}
+      {isAvailable && challenge.goal != null && challenge.goal_type === 'fixed' && (
+        <View style={styles.dailyGoalRow}>
+          <Ionicons name="flag-outline" size={13} color={colors.textTertiary} />
+          <Text style={styles.dailyGoalText}>
+            Goal: {fmtMetric(challenge.goal, metric)}
+            {metric === 'screen_time' ? ' or less' : ' opens or less'}
+          </Text>
+        </View>
+      )}
+
+      {/* Progress bar (while active) */}
+      {isActive && goal != null && (
+        <>
+          <View style={[styles.progressTrack, { marginTop: spacing.sm }]}>
+            <View style={[styles.progressFill, { width: `${Math.min(Math.round(pct * 100), 100)}%` as any, backgroundColor: barColor }]} />
+          </View>
+          <Text style={styles.progressLabel}>
+            {fmtMetric(currentProgress, metric)} used · Goal: {fmtMetric(goal, metric)}
+          </Text>
+        </>
+      )}
+
+      {/* Footer */}
+      <View style={styles.cardFooter}>
+        <Text style={styles.cardDateText}>
+          {isAvailable ? `Stake ${challenge.stake_credits} cr` : isActive ? 'In progress' : isClaimable ? 'Ready to claim' : result === 'won' ? 'Won!' : 'Lost'}
+        </Text>
+
+        {isAvailable && (
+          <TouchableOpacity
+            style={[styles.enterBtn, acting && styles.claimBtnDim]}
+            disabled={acting}
+            onPress={() => onEnter(challenge.id)}
+            activeOpacity={0.8}
+          >
+            {acting ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.enterBtnText}>Enter · {challenge.stake_credits} cr</Text>
+            )}
+          </TouchableOpacity>
+        )}
+
+        {isActive && (
+          <View style={[styles.settledBadge, { backgroundColor: `${colors.accentPrimary}18`, borderColor: `${colors.accentPrimary}40` }]}>
+            <Text style={[styles.settledBadgeText, { color: colors.accentPrimary }]}>Active</Text>
+          </View>
+        )}
+
+        {isClaimable && (
+          <TouchableOpacity
+            style={[styles.claimBtn, acting && styles.claimBtnDim]}
+            disabled={acting}
+            onPress={() => onClaim(challenge.id)}
+            activeOpacity={0.8}
+          >
+            {acting ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.claimBtnText}>Claim</Text>
+            )}
+          </TouchableOpacity>
+        )}
+
+        {isClaimed && (
+          <View style={[
+            styles.settledBadge,
+            result === 'won' && { backgroundColor: `${colors.success}22`, borderColor: `${colors.success}44` },
+            result === 'lost' && { backgroundColor: `${colors.destructive}22`, borderColor: `${colors.destructive}44` },
+          ]}>
+            <Text style={[
+              styles.settledBadgeText,
+              result === 'won' && { color: colors.success },
+              result === 'lost' && { color: colors.destructive },
+            ]}>
+              {result === 'won' ? `Won +${challenge.reward_credits} cr` : 'Lost'}
+            </Text>
           </View>
         )}
       </View>
@@ -495,8 +716,6 @@ function TransactionModal({
 
 // ── Create Bet Modal ──────────────────────────────────────────────────────────
 
-type DateOption = 'today' | 'tomorrow' | 'week' | 'custom';
-
 function CreateBetModal({
   visible,
   onClose,
@@ -513,9 +732,91 @@ function CreateBetModal({
   const [stake, setStake] = useState('');
   const [metric, setMetric] = useState<'screen_time' | 'opens' | 'streak_days'>('screen_time');
   const [appName, setAppName] = useState('');
-  const [dateOption, setDateOption] = useState<DateOption>('tomorrow');
-  const [customDate, setCustomDate] = useState(''); // YYYY-MM-DD
   const [submitting, setSubmitting] = useState(false);
+
+  // Duration slider state
+  const DEFAULT_IDX = 1; // 30m
+  const [durIdx, setDurIdx] = useState(DEFAULT_IDX);
+  const [calOption, setCalOption] = useState<CalOption | null>('tomorrow');
+  const trackW = useRef(0);
+  const idxRef = useRef(DEFAULT_IDX);
+  const thumbAnim = useRef(new Animated.Value(0)).current;
+  const fillAnim = useRef(new Animated.Value(DEFAULT_IDX / (DUR_N - 1))).current;
+
+  useEffect(() => {
+    if (visible) {
+      idxRef.current = DEFAULT_IDX;
+      setDurIdx(DEFAULT_IDX);
+      setCalOption('tomorrow');
+      fillAnim.setValue(DEFAULT_IDX / (DUR_N - 1));
+      thumbAnim.setValue(0);
+    }
+  }, [visible]);
+
+  function springTo(newIdx: number) {
+    const pct = newIdx / (DUR_N - 1);
+    Animated.parallel([
+      Animated.spring(thumbAnim, {
+        toValue: pct * Math.max(0, trackW.current - DUR_THUMB),
+        useNativeDriver: false,
+        tension: 220,
+        friction: 11,
+      }),
+      Animated.spring(fillAnim, {
+        toValue: pct,
+        useNativeDriver: false,
+        tension: 220,
+        friction: 11,
+      }),
+    ]).start();
+  }
+
+  function snapToIdx(newIdx: number) {
+    const clamped = Math.max(0, Math.min(DUR_N - 1, newIdx));
+    idxRef.current = clamped;
+    setDurIdx(clamped);
+    setCalOption(null);
+    springTo(clamped);
+  }
+
+  function fromTouchX(x: number) {
+    if (!trackW.current) return;
+    const pct = Math.max(0, Math.min(1, x / trackW.current));
+    const newIdx = Math.round(pct * (DUR_N - 1));
+    thumbAnim.setValue(pct * Math.max(0, trackW.current - DUR_THUMB));
+    fillAnim.setValue(pct);
+    if (newIdx !== idxRef.current) {
+      idxRef.current = newIdx;
+      setDurIdx(newIdx);
+      setCalOption(null);
+    }
+  }
+
+  function selectCal(opt: CalOption) {
+    setCalOption(opt);
+    const pct = 1;
+    Animated.parallel([
+      Animated.spring(thumbAnim, {
+        toValue: Math.max(0, trackW.current - DUR_THUMB),
+        useNativeDriver: false,
+        tension: 220,
+        friction: 11,
+      }),
+      Animated.spring(fillAnim, {
+        toValue: pct,
+        useNativeDriver: false,
+        tension: 220,
+        friction: 11,
+      }),
+    ]).start();
+  }
+
+  function onTrackLayout(e: any) {
+    trackW.current = e.nativeEvent.layout.width;
+    const pct = idxRef.current / (DUR_N - 1);
+    thumbAnim.setValue(pct * Math.max(0, trackW.current - DUR_THUMB));
+    fillAnim.setValue(pct);
+  }
 
   const METRICS: Array<{ value: 'screen_time' | 'opens' | 'streak_days'; label: string }> = [
     { value: 'screen_time', label: 'Screen Time' },
@@ -523,32 +824,24 @@ function CreateBetModal({
     { value: 'streak_days', label: 'Streak Days' },
   ];
 
-  const DATE_OPTIONS: Array<{ key: DateOption; label: string }> = [
-    { key: 'today', label: 'Today' },
-    { key: 'tomorrow', label: 'Tomorrow' },
-    { key: 'week', label: 'This Week' },
-    { key: 'custom', label: 'Custom' },
-  ];
-
   function getEndDate(): string {
     const d = new Date();
-    if (dateOption === 'today') {
+    if (calOption === 'today') {
       d.setHours(23, 59, 59, 0);
       return d.toISOString();
     }
-    if (dateOption === 'tomorrow') {
+    if (calOption === 'tomorrow') {
       d.setDate(d.getDate() + 1);
       d.setHours(23, 59, 59, 0);
       return d.toISOString();
     }
-    if (dateOption === 'week') {
+    if (calOption === 'week') {
       d.setDate(d.getDate() + 7);
       d.setHours(23, 59, 59, 0);
       return d.toISOString();
     }
-    const c = customDate ? new Date(customDate) : new Date();
-    c.setHours(23, 59, 59, 0);
-    return c.toISOString();
+    d.setMinutes(d.getMinutes() + DUR_STEPS_MIN[durIdx]);
+    return d.toISOString();
   }
 
   async function handleSubmit() {
@@ -598,7 +891,7 @@ function CreateBetModal({
       setStake('');
       setAppName('');
       setMaxParticipants('2');
-      setDateOption('tomorrow');
+      setCalOption('tomorrow');
       onCreated();
       onClose();
     } catch {
@@ -683,36 +976,82 @@ function CreateBetModal({
             />
 
             <Text style={styles.fieldLabel}>Ends</Text>
-            <View style={styles.dateOptionRow}>
-              {DATE_OPTIONS.map((opt) => (
-                <TouchableOpacity
-                  key={opt.key}
-                  style={[styles.dateChip, dateOption === opt.key && styles.dateChipActive]}
-                  onPress={() => setDateOption(opt.key)}
-                >
-                  <Text
-                    style={[
-                      styles.dateChipText,
-                      dateOption === opt.key && styles.dateChipTextActive,
-                    ]}
-                  >
-                    {opt.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+
+            {/* Big time label */}
+            <Text style={styles.durBigLabel}>{durLabel(calOption, durIdx)}</Text>
+
+            {/* Slider */}
+            <View
+              style={styles.durTrackWrap}
+              onLayout={onTrackLayout}
+              onStartShouldSetResponder={() => true}
+              onMoveShouldSetResponder={() => true}
+              onResponderGrant={(e) => fromTouchX(e.nativeEvent.locationX)}
+              onResponderMove={(e) => fromTouchX(e.nativeEvent.locationX)}
+            >
+              <View style={[styles.durTrack, calOption !== null && { opacity: 0.4 }]}>
+                <Animated.View
+                  style={[
+                    styles.durFill,
+                    {
+                      width: fillAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: ['0%', '100%'],
+                      }),
+                    },
+                  ]}
+                />
+              </View>
+              <Animated.View
+                style={[
+                  styles.durThumb,
+                  { left: thumbAnim },
+                  calOption !== null && { opacity: 0.4 },
+                ]}
+              />
+            </View>
+            <View style={styles.durEndLabels}>
+              <Text style={styles.durEndTxt}>15 min</Text>
+              <Text style={styles.durEndTxt}>3 h</Text>
             </View>
 
-            {dateOption === 'custom' && (
-              <TextInput
-                style={[styles.input, { marginTop: spacing.sm }]}
-                value={customDate}
-                onChangeText={setCustomDate}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor={colors.textTertiary}
-                autoCapitalize="none"
-                keyboardType="numbers-and-punctuation"
-              />
-            )}
+            {/* Duration preset chips */}
+            <View style={styles.durPresetRow}>
+              {DUR_PRESETS.map((p) => {
+                const active = calOption === null && durIdx === p.idx;
+                return (
+                  <TouchableOpacity
+                    key={p.label}
+                    style={[styles.durChip, active && styles.durChipActive]}
+                    onPress={() => snapToIdx(p.idx)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.durChipTxt, active && styles.durChipTxtActive]}>
+                      {p.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Calendar chips */}
+            <View style={styles.durCalRow}>
+              {CAL_OPTIONS.map((opt) => {
+                const active = calOption === opt.key;
+                return (
+                  <TouchableOpacity
+                    key={opt.key}
+                    style={[styles.durChip, styles.durCalChip, active && styles.durChipActive]}
+                    onPress={() => selectCal(opt.key)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.durChipTxt, active && styles.durChipTxtActive]}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
 
             <View style={styles.escrowWarning}>
               <Ionicons name="warning-outline" size={16} color={colors.warning} />
@@ -740,63 +1079,38 @@ function CreateBetModal({
   );
 }
 
-// ── Tab 1: App Challenges ────────────────────────────────────────────────────
+// ── Tab 1: Daily Challenges ───────────────────────────────────────────────────
 
-function AppTab({
+function DailyTab({
   balance,
   balanceLoading,
   onOpenTransactions,
+  onBalanceRefresh,
 }: {
   balance: number | null;
   balanceLoading: boolean;
   onOpenTransactions: () => void;
+  onBalanceRefresh: () => void;
 }) {
-  const [challenges, setChallenges] = useState<Challenge[]>([]);
+  const [challenges, setChallenges] = useState<DailyChallenge[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [claimingId, setClaimingId] = useState<string | null>(null);
+  const [actingId, setActingId] = useState<string | null>(null);
 
   const fetchChallenges = useCallback(async () => {
     setError(null);
     try {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return;
-      const headers = { Authorization: `Bearer ${token}` };
-      const [appRes, activeRes] = await Promise.all([
-        fetch(`${API_URL}/api/challenges/app`, { headers }),
-        fetch(`${API_URL}/api/challenges/active`, { headers }),
-      ]);
-      if (!appRes.ok) throw new Error('Failed to load challenges');
-      const appData = await appRes.json();
-      const activeData = activeRes.ok ? await activeRes.json() : { challenges: [] };
-
-      const activeChallenges: ActiveChallenge[] = (Array.isArray(activeData)
-        ? activeData
-        : (activeData.challenges ?? [])
-      ).map((c: any) => ({ ...c, id: c.id ?? c.challengeId }));
-
-      const rawChallenges: Challenge[] = (Array.isArray(appData)
-        ? appData
-        : (appData.challenges ?? [])
-      ).map((c: any) => ({ ...c, id: c.id ?? c.challengeId }));
-
-      // Merge progress from active challenges
-      const progressMap = new Map<string, number>();
-      activeChallenges.forEach((ac) => {
-        progressMap.set(ac.id, ac.myProgress ?? ac.currentProgress ?? 0);
+      const res = await fetch(`${API_URL}/api/challenges/daily`, {
+        headers: { Authorization: `Bearer ${token}` },
       });
-
-      const now = Date.now();
-      const merged = rawChallenges.map((c) => ({
-        ...c,
-        currentProgress: progressMap.get(c.id) ?? c.currentProgress ?? 0,
-        claimable: c.status !== 'settled' && c.status !== 'cancelled' && new Date(c.endDate).getTime() < now,
-      }));
-
-      setChallenges(merged);
+      if (!res.ok) throw new Error('Failed to load');
+      const data = await res.json();
+      setChallenges(Array.isArray(data) ? data : (data.challenges ?? []));
     } catch {
-      setError('Could not load app challenges.');
+      setError('Could not load daily challenges.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -807,40 +1121,64 @@ function AppTab({
     fetchChallenges();
   }, [fetchChallenges]);
 
-  function onRefreshApp() {
-    setRefreshing(true);
-    fetchChallenges();
-  }
-
-  async function handleClaim(id: string) {
-    setClaimingId(id);
+  async function handleEnter(templateId: string) {
+    setActingId(templateId);
     try {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return;
-      const res = await fetch(`${API_URL}/api/challenges/${id}/claim`, {
+      const res = await fetch(`${API_URL}/api/challenges/daily/${templateId}/enter`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
-      if (data.result === 'won') {
-        Alert.alert('You won!', `+${data.creditsAwarded ?? 0} credits`);
-      } else if (data.result === 'lost') {
-        Alert.alert('Goal not met this time.');
-      } else if (data.result === 'already_settled') {
-        Alert.alert('Already settled.');
-      } else {
-        Alert.alert('Claimed', data.result ?? 'Done.');
+      if (!res.ok) {
+        Alert.alert('Could not enter', data.detail ?? 'Something went wrong.');
+        return;
       }
+      Alert.alert(
+        'Challenge entered!',
+        `Goal: ${data.goal != null ? (challenges.find(c => c.id === templateId)?.metric === 'screen_time' ? fmtSeconds(data.goal) : String(Math.round(data.goal))) : '—'}\nYour ${data.stakeCredits} cr stake is locked until midnight.`,
+      );
       fetchChallenges();
+      onBalanceRefresh();
     } catch {
-      Alert.alert('Error', 'Failed to claim reward.');
+      Alert.alert('Error', 'Failed to enter challenge.');
     } finally {
-      setClaimingId(null);
+      setActingId(null);
     }
   }
 
-  const active = challenges.filter((c) => c.status !== 'settled' && c.status !== 'cancelled');
-  const completed = challenges.filter((c) => c.status === 'settled');
+  async function handleClaim(templateId: string) {
+    setActingId(templateId);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) return;
+      const res = await fetch(`${API_URL}/api/challenges/daily/${templateId}/claim`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        Alert.alert('Cannot claim yet', data.detail ?? 'Something went wrong.');
+        return;
+      }
+      if (data.result === 'won') {
+        Alert.alert('You won! 🎉', `+${data.creditsAwarded} credits added to your balance.`);
+      } else {
+        Alert.alert('Better luck tomorrow', 'You didn\'t meet the goal — your stake is forfeited.');
+      }
+      fetchChallenges();
+      onBalanceRefresh();
+    } catch {
+      Alert.alert('Error', 'Failed to claim challenge.');
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  const today = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+  const entered = challenges.filter(c => c.enrolled);
+  const available = challenges.filter(c => !c.enrolled);
 
   return (
     <ScrollView
@@ -848,12 +1186,21 @@ function AppTab({
       contentContainerStyle={styles.tabContentInner}
       showsVerticalScrollIndicator={false}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefreshApp} tintColor={colors.accentPrimary} />
+        <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchChallenges(); }} tintColor={colors.accentPrimary} />
       }
     >
       {/* Credit balance */}
       <View style={styles.balanceRow}>
         <CreditBadge balance={balance} loading={balanceLoading} onPress={onOpenTransactions} />
+        <Text style={styles.todayLabel}>{today}</Text>
+      </View>
+
+      {/* Staking info banner */}
+      <View style={styles.infoBanner}>
+        <Ionicons name="information-circle-outline" size={15} color={colors.accentSecondary} />
+        <Text style={styles.infoBannerText}>
+          Stake credits to enter · Win and get 2× back · Claim after midnight
+        </Text>
       </View>
 
       {loading ? (
@@ -862,32 +1209,34 @@ function AppTab({
         <Text style={styles.errorText}>{error}</Text>
       ) : (
         <>
-          <Text style={styles.sectionHeader}>Active</Text>
-          {active.length === 0 ? (
-            <Text style={styles.emptyText}>No active challenges yet.</Text>
-          ) : (
-            active.map((c) => (
-              <AppChallengeCard
-                key={c.id}
-                challenge={c}
-                onClaim={handleClaim}
-                claiming={claimingId === c.id}
-              />
-            ))
-          )}
-
-          {completed.length > 0 && (
+          {entered.length > 0 && (
             <>
-              <Text style={styles.sectionHeader}>Completed</Text>
-              {completed.map((c) => (
-                <AppChallengeCard
+              <Text style={styles.sectionHeader}>Your Challenges</Text>
+              {entered.map(c => (
+                <DailyChallengeCard
                   key={c.id}
                   challenge={c}
+                  onEnter={handleEnter}
                   onClaim={handleClaim}
-                  claiming={claimingId === c.id}
+                  acting={actingId === c.id}
                 />
               ))}
             </>
+          )}
+
+          <Text style={styles.sectionHeader}>Available Today</Text>
+          {available.length === 0 ? (
+            <Text style={styles.emptyText}>You've entered all of today's challenges!</Text>
+          ) : (
+            available.map(c => (
+              <DailyChallengeCard
+                key={c.id}
+                challenge={c}
+                onEnter={handleEnter}
+                onClaim={handleClaim}
+                acting={actingId === c.id}
+              />
+            ))
           )}
         </>
       )}
@@ -1195,7 +1544,7 @@ function ActiveTab() {
           <Ionicons name="game-controller-outline" size={40} color={colors.textTertiary} />
           <Text style={styles.emptyStateTitle}>No active challenges</Text>
           <Text style={styles.emptyStateBody}>
-            Start one from App Challenges or challenge a friend.
+            Enter a daily challenge or bet a friend.
           </Text>
         </View>
       ) : (
@@ -1245,7 +1594,7 @@ export default function ChallengesScreen() {
   }, [fetchBalance]);
 
   const TABS: Array<{ key: InnerTab; label: string }> = [
-    { key: 'app', label: 'App' },
+    { key: 'app', label: 'Daily' },
     { key: 'friends', label: 'Friends' },
     { key: 'active', label: 'Active' },
   ];
@@ -1282,10 +1631,11 @@ export default function ChallengesScreen() {
 
       {/* Tab content */}
       {activeTab === 'app' && (
-        <AppTab
+        <DailyTab
           balance={balance}
           balanceLoading={balanceLoading}
           onOpenTransactions={() => setTxModalVisible(true)}
+          onBalanceRefresh={fetchBalance}
         />
       )}
       {activeTab === 'friends' && (
@@ -1586,35 +1936,6 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
 
-  // Date option chips
-  dateOptionRow: {
-    flexDirection: 'row',
-    gap: spacing.xs,
-    flexWrap: 'wrap',
-  },
-  dateChip: {
-    flex: 1,
-    minWidth: 70,
-    paddingVertical: 9,
-    borderRadius: 10,
-    alignItems: 'center',
-    backgroundColor: colors.surface2,
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  dateChipActive: {
-    borderColor: colors.accentPrimary,
-    backgroundColor: `${colors.accentPrimary}18`,
-  },
-  dateChipText: {
-    fontSize: fontSize.small,
-    fontWeight: '600',
-    color: colors.textTertiary,
-  },
-  dateChipTextActive: {
-    color: colors.accentPrimary,
-  },
-
   // Accept / Decline buttons
   actionRow: {
     flexDirection: 'row',
@@ -1780,6 +2101,92 @@ const styles = StyleSheet.create({
   metricChipTextActive: {
     color: colors.accentPrimary,
   },
+  // Duration slider (CreateBetModal)
+  durBigLabel: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: colors.textPrimary,
+    textAlign: 'center',
+    letterSpacing: -0.5,
+    marginVertical: spacing.md,
+  },
+  durTrackWrap: {
+    height: 40,
+    justifyContent: 'center',
+    marginHorizontal: 4,
+    marginBottom: 4,
+  },
+  durTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.surface2,
+    overflow: 'hidden',
+  },
+  durFill: {
+    height: '100%',
+    borderRadius: 3,
+    backgroundColor: colors.accentPrimary,
+  },
+  durThumb: {
+    position: 'absolute',
+    width: DUR_THUMB,
+    height: DUR_THUMB,
+    borderRadius: DUR_THUMB / 2,
+    backgroundColor: '#fff',
+    top: (40 - DUR_THUMB) / 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 4,
+    borderWidth: 2,
+    borderColor: colors.accentPrimary,
+  },
+  durEndLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm,
+  },
+  durEndTxt: {
+    fontSize: fontSize.tiny,
+    color: colors.textTertiary,
+  },
+  durPresetRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: spacing.sm,
+  },
+  durCalRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: spacing.sm,
+  },
+  durChip: {
+    flex: 1,
+    backgroundColor: colors.surface2,
+    borderRadius: 20,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  durCalChip: {
+    borderRadius: 10,
+  },
+  durChipActive: {
+    borderColor: colors.accentPrimary,
+    backgroundColor: `${colors.accentPrimary}18`,
+  },
+  durChipTxt: {
+    fontSize: fontSize.small,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  durChipTxtActive: {
+    color: colors.accentPrimary,
+    fontWeight: '700',
+  },
+
   escrowWarning: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -1809,5 +2216,81 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#fff',
     letterSpacing: 0.3,
+  },
+
+  // Daily challenges
+  todayLabel: {
+    fontSize: fontSize.small,
+    color: colors.textTertiary,
+    fontWeight: '500',
+  },
+  infoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: `${colors.accentSecondary}12`,
+    borderRadius: 10,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 9,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: `${colors.accentSecondary}30`,
+  },
+  infoBannerText: {
+    flex: 1,
+    fontSize: fontSize.small,
+    color: colors.accentSecondary,
+    lineHeight: 18,
+  },
+  diffBadge: {
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderWidth: 1,
+  },
+  diffBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  dailyGoalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  dailyGoalText: {
+    fontSize: fontSize.small,
+    color: colors.textTertiary,
+    fontStyle: 'italic',
+  },
+  dailyGoalHint: {
+    fontSize: fontSize.small,
+    color: colors.textTertiary,
+    fontStyle: 'italic',
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  enterBtn: {
+    backgroundColor: colors.accentSecondary,
+    borderRadius: 10,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  enterBtnText: {
+    fontSize: fontSize.small,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  cardWon: {
+    borderWidth: 1,
+    borderColor: `${colors.success}44`,
+  },
+  cardLost: {
+    borderWidth: 1,
+    borderColor: `${colors.destructive}22`,
+    opacity: 0.8,
   },
 });

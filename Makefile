@@ -31,8 +31,20 @@ restart:
 		cd $(REMOTE)/frontend && \
 		npm install --silent && \
 		tmux new-session -d -s $(SESSION) "NGROK_AUTHTOKEN=$(NGROK_TOKEN) npx expo start --tunnel --go"; \
-		sleep 12 && \
-		tmux capture-pane -pt $(SESSION) -S -80 || true \
+		for i in $$(seq 1 30); do \
+			sleep 2; \
+			if ! tmux has-session -t $(SESSION) 2>/dev/null; then \
+				echo "ERROR: expo session died — tunnel failed to start"; \
+				exit 1; \
+			fi; \
+			output=$$(tmux capture-pane -pt $(SESSION) -S -80 2>/dev/null); \
+			if echo "$$output" | grep -q "Tunnel ready"; then \
+				echo "$$output"; \
+				exit 0; \
+			fi; \
+		done; \
+		echo "WARNING: timed out waiting for tunnel"; \
+		tmux capture-pane -pt $(SESSION) -S -80 2>/dev/null || true \
 	'
 
 ## Kill the expo tmux session on the server
